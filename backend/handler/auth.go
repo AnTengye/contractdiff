@@ -3,8 +3,8 @@ package handler
 import (
 	"net/http"
 
-	"github.com/contractdiff/backend/config"
-	"github.com/contractdiff/backend/middleware"
+	"github.com/AnTengye/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/gin-gonic/gin"
 )
 

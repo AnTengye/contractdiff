@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )

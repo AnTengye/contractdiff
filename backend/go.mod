@@ -1,4 +1,4 @@
-module github.com/contractdiff/backend
+module github.com/AnTengye/contractdiff/backend
 
 go 1.25
 

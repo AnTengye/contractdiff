@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )

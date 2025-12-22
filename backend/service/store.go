@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/contractdiff/backend/model"
+	"github.com/AnTengye/contractdiff/backend/model"
 )
 
 // ContractStore is an in-memory store for contracts

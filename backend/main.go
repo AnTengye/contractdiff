@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/contractdiff/backend/config"
-	"github.com/contractdiff/backend/handler"
-	"github.com/contractdiff/backend/middleware"
-	"github.com/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/handler"
+	"github.com/AnTengye/contractdiff/backend/middleware"
+	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/gin-gonic/gin"
 )
 

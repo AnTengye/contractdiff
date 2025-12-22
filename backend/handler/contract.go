@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/contractdiff/backend/middleware"
-	"github.com/contractdiff/backend/model"
-	"github.com/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/middleware"
+	"github.com/AnTengye/contractdiff/backend/model"
+	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

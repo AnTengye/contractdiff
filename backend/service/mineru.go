@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/config"
 )
 
 type MineruService struct {
