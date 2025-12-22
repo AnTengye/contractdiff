@@ -1,0 +1,29 @@
+server:
+  port: 8080
+  
+minio:
+  endpoint: "xxx.temp.com"
+  access_key: "xxx"
+  secret_key: "xxx"
+  bucket: "pdfdiff"
+  use_ssl: true
+  expire_days: 7
+  
+mineru:
+  api_url: "https://mineru.net/api/v4"
+  api_token: "xxx"
+  model_version: "vlm"
+  callback_url: ""
+  seed: "contractdiff-seed"
+  
+auth:
+  jwt_secret: "mytestdiff"
+  token_expire_hours: 24
+  
+users:
+  - username: "admin"
+    password: "admin123"
+    tenant: "default"
+  - username: "user1"
+    password: "user123"
+    tenant: "tenant1"

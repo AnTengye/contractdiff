@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>合同比对工具</title>
+    <meta name="description" content="智能合同文档差异对比工具，支持 PDF/DOCX 提取的 JSON 文件对比">
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                </svg>
+                <h1>合同比对工具</h1>
+            </div>
+            <div class="header-right">
+                <p class="subtitle">智能文档差异分析</p>
+                <div class="user-info" id="user-info" style="display:none;">
+                    <span id="user-display"></span>
+                    <button class="logout-btn" onclick="logout()">退出</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Upload Section -->
+        <section class="upload-section">
+            <div class="upload-grid">
+                <div class="upload-card" id="upload-left">
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                    </div>
+                    <h3>原始合同</h3>
+                    <p class="upload-hint">点击或拖拽上传 PDF 文件</p>
+                    <input type="file" id="file-left" accept=".pdf" hidden>
+                    <div class="file-info" id="info-left"></div>
+                    <div class="contract-id" id="contract-id-left"></div>
+                    <div class="progress-container" id="progress-left" style="display:none;">
+                        <div class="progress-bar"><div class="progress-fill" id="progress-fill-left"></div></div>
+                        <span class="progress-text" id="progress-text-left">上传中...</span>
+                    </div>
+                </div>
+
+                <div class="compare-arrow">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                </div>
+
+                <div class="upload-card" id="upload-right">
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                    </div>
+                    <h3>对比合同</h3>
+                    <p class="upload-hint">点击或拖拽上传 PDF 文件</p>
+                    <input type="file" id="file-right" accept=".pdf" hidden>
+                    <div class="file-info" id="info-right"></div>
+                    <div class="contract-id" id="contract-id-right"></div>
+                    <div class="progress-container" id="progress-right" style="display:none;">
+                        <div class="progress-bar"><div class="progress-fill" id="progress-fill-right"></div></div>
+                        <span class="progress-text" id="progress-text-right">上传中...</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="compare-btn" id="compare-btn" disabled>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                开始对比
+            </button>
+        </section>
+
+        <!-- Stats Section -->
+        <section class="stats-section" id="stats-section" style="display: none;">
+            <div class="stats-grid">
+                <div class="stat-card stat-added">
+                    <div class="stat-value" id="stat-added">0</div>
+                    <div class="stat-label">新增内容</div>
+                </div>
+                <div class="stat-card stat-removed">
+                    <div class="stat-value" id="stat-removed">0</div>
+                    <div class="stat-label">删除内容</div>
+                </div>
+                <div class="stat-card stat-total">
+                    <div class="stat-value" id="stat-total">0</div>
+                    <div class="stat-label">总差异数</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Diff Result Section -->
+        <section class="diff-section" id="diff-section" style="display: none;">
+            <div class="diff-header">
+                <h2>对比结果</h2>
+            </div>
+            <div class="legend">
+                <span class="legend-item added"><span class="legend-color"></span>新增</span>
+                <span class="legend-item removed"><span class="legend-color"></span>删除</span>
+                <div class="sync-scroll-controls">
+                    <button class="sync-scroll-btn active" id="sync-scroll-toggle" onclick="toggleSyncScroll()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 1l4 4-4 4"></path>
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                            <path d="M7 23l-4-4 4-4"></path>
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                        </svg>
+                        同步滚动: 开
+                    </button>
+                    <select class="sync-mode-select" id="sync-scroll-mode" onchange="setSyncScrollMode(this.value)">
+                        <option value="percentage">百分比同步</option>
+                        <option value="anchor">段落锚点同步</option>
+                    </select>
+                </div>
+            </div>
+            <div class="diff-container">
+                <div class="diff-panel">
+                    <div class="panel-header">
+                        <span id="left-filename">原始合同</span>
+                    </div>
+                    <div class="panel-content" id="diff-left"></div>
+                </div>
+                <div class="diff-panel">
+                    <div class="panel-header">
+                        <span id="right-filename">对比合同</span>
+                    </div>
+                    <div class="panel-content" id="diff-right"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Dual PDF Preview Section -->
+        <section class="pdf-section" id="pdf-section" style="display: none;">
+            <div class="pdf-header">
+                <h2>PDF 原文对比</h2>
+                <div class="pdf-controls">
+                    <div class="zoom-controls">
+                        <button class="nav-btn" id="zoom-out">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"></circle>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                <line x1="8" y1="11" x2="14" y2="11"></line>
+                            </svg>
+                        </button>
+                        <span class="zoom-level" id="zoom-level">100%</span>
+                        <button class="nav-btn" id="zoom-in">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"></circle>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                <line x1="11" y1="8" x2="11" y2="14"></line>
+                                <line x1="8" y1="11" x2="14" y2="11"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pdf-dual-container">
+                <!-- Left PDF (Original - Shows Deletions) -->
+                <div class="pdf-panel" id="pdf-panel-left">
+                    <div class="pdf-panel-header">
+                        <span class="pdf-panel-title">原始合同</span>
+                        <span class="pdf-filename" id="pdf-filename-left"></span>
+                        <span class="legend-badge removed">显示删除内容</span>
+                    </div>
+                    <div class="pdf-viewer" id="pdf-viewer-left">
+                        <div class="pdf-pages-container" id="pdf-pages-left"></div>
+                        <div class="pdf-placeholder" id="pdf-placeholder-left">
+                            <div class="pdf-loading-spinner"></div>
+                            <p>待对比后自动加载 PDF</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pdf-panel" id="pdf-panel-right">
+                    <div class="pdf-panel-header">
+                        <span class="pdf-panel-title">对比合同</span>
+                        <span class="pdf-filename" id="pdf-filename-right"></span>
+                        <span class="legend-badge added">显示新增内容</span>
+                    </div>
+                    <div class="pdf-viewer" id="pdf-viewer-right">
+                        <div class="pdf-pages-container" id="pdf-pages-right"></div>
+                        <div class="pdf-placeholder" id="pdf-placeholder-right">
+                            <div class="pdf-loading-spinner"></div>
+                            <p>待对比后自动加载 PDF</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>合同比对工具 &copy; 2024</p>
+        </footer>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <script>
+        // Auth check and user display
+        const API_BASE = '/api';
+
+        function checkAuth() {
+            const token = localStorage.getItem('auth_token');
+            const expires = localStorage.getItem('auth_expires');
+
+            if (!token || !expires || new Date(expires) <= new Date()) {
+                window.location.href = '/login.html';
+                return false;
+            }
+
+            // Display user info
+            const username = localStorage.getItem('auth_username');
+            const tenant = localStorage.getItem('auth_tenant');
+            const userInfo = document.getElementById('user-info');
+            const userDisplay = document.getElementById('user-display');
+
+            if (userInfo && userDisplay) {
+                userDisplay.textContent = `${username} (${tenant})`;
+                userInfo.style.display = 'flex';
+            }
+
+            return true;
+        }
+
+        function logout() {
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('auth_expires');
+            localStorage.removeItem('auth_username');
+            localStorage.removeItem('auth_tenant');
+            window.location.href = '/login.html';
+        }
+
+        function getAuthHeaders() {
+            return {
+                'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            };
+        }
+
+        // Check auth on page load - redirect immediately if not authenticated
+        // Don't throw error as it blocks app.js from loading
+        checkAuth();
+    </script>
+    <script src="app.js"></script>
+</body>
+</html>
+
+
