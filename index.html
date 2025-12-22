@@ -42,8 +42,8 @@
                         </svg>
                     </div>
                     <h3>原始合同</h3>
-                    <p class="upload-hint">点击或拖拽上传 PDF 文件</p>
-                    <input type="file" id="file-left" accept=".pdf" hidden>
+                    <p class="upload-hint">点击或拖拽上传 PDF/DOCX 文件</p>
+                    <input type="file" id="file-left" accept=".pdf,.docx" hidden>
                     <div class="file-info" id="info-left"></div>
                     <div class="contract-id" id="contract-id-left"></div>
                     <div class="progress-container" id="progress-left" style="display:none;">
@@ -68,8 +68,8 @@
                         </svg>
                     </div>
                     <h3>对比合同</h3>
-                    <p class="upload-hint">点击或拖拽上传 PDF 文件</p>
-                    <input type="file" id="file-right" accept=".pdf" hidden>
+                    <p class="upload-hint">点击或拖拽上传 PDF/DOCX 文件</p>
+                    <input type="file" id="file-right" accept=".pdf,.docx" hidden>
                     <div class="file-info" id="info-right"></div>
                     <div class="contract-id" id="contract-id-right"></div>
                     <div class="progress-container" id="progress-right" style="display:none;">
@@ -149,7 +149,7 @@
         <!-- Dual PDF Preview Section -->
         <section class="pdf-section" id="pdf-section" style="display: none;">
             <div class="pdf-header">
-                <h2>PDF 原文对比</h2>
+                <h2>原文对比</h2>
                 <div class="pdf-controls">
                     <div class="zoom-controls">
                         <button class="nav-btn" id="zoom-out">
@@ -184,7 +184,7 @@
                         <div class="pdf-pages-container" id="pdf-pages-left"></div>
                         <div class="pdf-placeholder" id="pdf-placeholder-left">
                             <div class="pdf-loading-spinner"></div>
-                            <p>待对比后自动加载 PDF</p>
+                            <p>待对比后自动加载文档</p>
                         </div>
                     </div>
                 </div>
@@ -199,7 +199,7 @@
                         <div class="pdf-pages-container" id="pdf-pages-right"></div>
                         <div class="pdf-placeholder" id="pdf-placeholder-right">
                             <div class="pdf-loading-spinner"></div>
-                            <p>待对比后自动加载 PDF</p>
+                            <p>待对比后自动加载文档</p>
                         </div>
                     </div>
                 </div>
@@ -214,6 +214,7 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+    <script src="https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js"></script>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>

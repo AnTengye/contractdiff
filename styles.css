@@ -903,6 +903,105 @@ body {
     }
 }
 
+/* ===== DOCX Content Styles ===== */
+.docx-page-wrapper {
+    background: white;
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    box-shadow: var(--shadow-lg);
+    overflow-x: auto;
+}
+
+.docx-content {
+    font-family: 'Times New Roman', serif;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #333;
+    width: 100%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.docx-content p {
+    margin-bottom: 0.75em;
+}
+
+.docx-content h1,
+.docx-content h2,
+.docx-content h3,
+.docx-content h4,
+.docx-content h5,
+.docx-content h6 {
+    margin-top: 0.75em;
+    margin-bottom: 0.5em;
+    font-weight: bold;
+}
+
+.docx-content h1 {
+    font-size: 1.5em;
+}
+
+.docx-content h2 {
+    font-size: 1.3em;
+}
+
+.docx-content h3 {
+    font-size: 1.1em;
+}
+
+.docx-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.75em 0;
+    font-size: 11px;
+}
+
+.docx-content table td,
+.docx-content table th {
+    border: 1px solid #ddd;
+    padding: 0.4em;
+}
+
+.docx-content ul,
+.docx-content ol {
+    margin-left: 1.5em;
+    margin-bottom: 0.75em;
+}
+
+.docx-content img {
+    max-width: 100%;
+    height: auto;
+}
+
+.docx-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* DOCX Diff Highlighting */
+.docx-highlight-added {
+    background: rgba(34, 197, 94, 0.3);
+    color: #166534;
+    padding: 0.1em 0.2em;
+    border-radius: 2px;
+    border-bottom: 2px solid #22c55e;
+}
+
+.docx-highlight-removed {
+    background: rgba(239, 68, 68, 0.3);
+    color: #991b1b;
+    padding: 0.1em 0.2em;
+    border-radius: 2px;
+    text-decoration: line-through;
+    border-bottom: 2px solid #ef4444;
+}
+
 /* ===== Footer ===== */
 .footer {
     text-align: center;

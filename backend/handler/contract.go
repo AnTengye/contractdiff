@@ -41,17 +41,27 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// Validate file type - only PDF allowed
+	// Validate file type - PDF and DOCX allowed
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	if ext != ".pdf" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Only PDF files are allowed"})
+	if ext != ".pdf" && ext != ".docx" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Only PDF and DOCX files are allowed"})
 		return
+	}
+
+	// Determine content type based on extension
+	var expectedContentType string
+	if ext == ".pdf" {
+		expectedContentType = "application/pdf"
+	} else {
+		expectedContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	}
 
 	// Validate content type
 	contentType := header.Header.Get("Content-Type")
-	if contentType != "application/pdf" && contentType != "" {
-		// Try to detect from file header
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = expectedContentType
+	} else if ext == ".pdf" && !strings.Contains(contentType, "pdf") {
+		// Try to detect from file header for PDF
 		buffer := make([]byte, 512)
 		_, err := file.Read(buffer)
 		if err != nil {
@@ -62,10 +72,12 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 		detectedType := http.DetectContentType(buffer)
 		if !strings.Contains(detectedType, "pdf") && detectedType != "application/octet-stream" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file type, only PDF is allowed"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file type"})
 			return
 		}
 		contentType = "application/pdf"
+	} else if ext == ".docx" {
+		contentType = expectedContentType
 	}
 
 	// Generate unique ID and object name

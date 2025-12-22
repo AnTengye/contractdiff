@@ -47,32 +47,45 @@ uploadRight.addEventListener('click', () => fileRight.click());
         e.preventDefault();
         el.classList.remove('dragover');
         const file = e.dataTransfer.files[0];
-        if (file && file.name.toLowerCase().endsWith('.pdf')) {
-            handlePDFUpload(file, idx === 0 ? 'left' : 'right');
+        const ext = file?.name.toLowerCase();
+        if (file && (ext.endsWith('.pdf') || ext.endsWith('.docx'))) {
+            handleFileUpload(file, idx === 0 ? 'left' : 'right');
         } else {
-            alert('请上传 PDF 文件');
+            alert('请上传 PDF 或 DOCX 文件');
         }
     });
 });
 
 fileLeft.addEventListener('change', (e) => {
-    if (e.target.files[0]) handlePDFUpload(e.target.files[0], 'left');
+    if (e.target.files[0]) handleFileUpload(e.target.files[0], 'left');
 });
 
 fileRight.addEventListener('change', (e) => {
-    if (e.target.files[0]) handlePDFUpload(e.target.files[0], 'right');
+    if (e.target.files[0]) handleFileUpload(e.target.files[0], 'right');
 });
 
 compareBtn.addEventListener('click', runComparison);
 
-// ===== PDF Upload and Processing =====
-async function handlePDFUpload(file, side) {
+// ===== File Upload and Processing =====
+// Track file types for preview rendering
+let leftFileType = null;  // 'pdf' or 'docx'
+let rightFileType = null;
+
+async function handleFileUpload(file, side) {
     const uploadCard = side === 'left' ? uploadLeft : uploadRight;
     const info = side === 'left' ? infoLeft : infoRight;
     const progressContainer = document.getElementById(`progress-${side}`);
     const progressFill = document.getElementById(`progress-fill-${side}`);
     const progressText = document.getElementById(`progress-text-${side}`);
     const filenameSpan = side === 'left' ? leftFilename : rightFilename;
+
+    // Detect file type
+    const fileType = file.name.toLowerCase().endsWith('.docx') ? 'docx' : 'pdf';
+    if (side === 'left') {
+        leftFileType = fileType;
+    } else {
+        rightFileType = fileType;
+    }
 
     // Reset state
     uploadCard.classList.remove('has-file');
@@ -104,14 +117,14 @@ async function handlePDFUpload(file, side) {
 
         const uploadResult = await uploadResponse.json();
         const contractId = uploadResult.id;
-        const pdfUrl = uploadResult.pdf_url;
+        const fileUrl = uploadResult.pdf_url;
 
         if (side === 'left') {
             leftContractId = contractId;
-            leftPdfUrl = pdfUrl;
+            leftPdfUrl = fileUrl;
         } else {
             rightContractId = contractId;
-            rightPdfUrl = pdfUrl;
+            rightPdfUrl = fileUrl;
         }
 
         // Show contract ID on the upload card for debugging
@@ -701,17 +714,211 @@ window.runComparison = function () {
 
         renderDiff(lastParagraphDiffs);
 
-        // Auto-load PDFs from uploaded contracts
+        // Auto-load documents from uploaded contracts
         if (leftPdfUrl) {
-            console.log('Auto-loading left PDF from:', leftPdfUrl);
-            await loadPdfFromUrl(leftPdfUrl, 'left');
+            console.log('Auto-loading left document from:', leftPdfUrl, 'type:', leftFileType);
+            await loadDocumentFromUrl(leftPdfUrl, 'left', leftFileType);
         }
         if (rightPdfUrl) {
-            console.log('Auto-loading right PDF from:', rightPdfUrl);
-            await loadPdfFromUrl(rightPdfUrl, 'right');
+            console.log('Auto-loading right document from:', rightPdfUrl, 'type:', rightFileType);
+            await loadDocumentFromUrl(rightPdfUrl, 'right', rightFileType);
+        }
+
+        // Auto-enable anchor sync mode for mixed format comparison (PDF vs DOCX)
+        if (leftFileType !== rightFileType) {
+            console.log('Mixed format detected, enabling anchor sync mode');
+            syncScrollMode = 'anchor';
+            updateSyncScrollUI();
         }
     }, 100);
 };
+
+// Load document from URL - routes to PDF or DOCX loader based on file type
+async function loadDocumentFromUrl(url, side, fileType) {
+    if (fileType === 'docx') {
+        await loadDocxFromUrl(url, side);
+    } else {
+        await loadPdfFromUrl(url, side);
+    }
+}
+
+// Load DOCX from URL and render with Mammoth.js
+async function loadDocxFromUrl(url, side) {
+    const filenameSpan = side === 'left' ? pdfFilenameLeft : pdfFilenameRight;
+    const placeholder = side === 'left' ? pdfPlaceholderLeft : pdfPlaceholderRight;
+    const container = side === 'left' ? pdfPagesContainerLeft : pdfPagesContainerRight;
+
+    try {
+        // Show loading state
+        placeholder.classList.add('loading');
+        placeholder.querySelector('p').textContent = '正在加载 DOCX...';
+        filenameSpan.textContent = '加载中...';
+
+        const response = await fetch(url);
+        const arrayBuffer = await response.arrayBuffer();
+
+        placeholder.querySelector('p').textContent = '正在渲染文档...';
+
+        // Convert DOCX to HTML using Mammoth.js
+        const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
+        const docxHtml = result.value;
+
+        // Hide placeholder, show container
+        placeholder.classList.remove('loading');
+        placeholder.style.display = 'none';
+        container.style.display = 'flex';
+
+        // Create a single page wrapper for DOCX content
+        container.innerHTML = '';
+        const pageWrapper = document.createElement('div');
+        pageWrapper.className = 'pdf-page-wrapper docx-page-wrapper';
+
+        const docxContent = document.createElement('div');
+        docxContent.className = 'docx-content';
+        docxContent.innerHTML = docxHtml;
+
+        pageWrapper.appendChild(docxContent);
+        container.appendChild(pageWrapper);
+
+        // Add paragraph markers for scroll sync
+        addDocxParagraphMarkers(docxContent);
+
+        // Apply diff highlighting if diff results are available
+        if (lastParagraphDiffs && lastParagraphDiffs.length > 0) {
+            applyDocxDiffHighlights(docxContent, side);
+        }
+
+        // Store reference for annotations
+        if (side === 'left') {
+            pdfDocLeft = null; // Clear PDF doc reference
+        } else {
+            pdfDocRight = null;
+        }
+
+        filenameSpan.textContent = '✓ DOCX 已加载';
+    } catch (err) {
+        console.error(`Failed to load DOCX for ${side}:`, err);
+        placeholder.classList.remove('loading');
+        placeholder.querySelector('p').textContent = '⚠ DOCX 加载失败';
+        filenameSpan.textContent = '加载失败';
+    }
+}
+
+/**
+ * Add paragraph markers to DOCX content for scroll sync
+ * Marks each paragraph with data-paragraph-idx attribute
+ */
+function addDocxParagraphMarkers(docxElement) {
+    // Get all block-level elements that represent paragraphs
+    const paragraphElements = docxElement.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li');
+
+    let idx = 0;
+    paragraphElements.forEach(el => {
+        // Only mark elements with meaningful text content
+        if (el.textContent.trim().length > 5) {
+            el.setAttribute('data-paragraph-idx', idx);
+            el.classList.add('docx-paragraph');
+            idx++;
+        }
+    });
+
+    console.log(`[DOCX] Marked ${idx} paragraphs for scroll sync`);
+}
+
+/**
+ * Apply diff highlighting to DOCX content
+ * For left side: highlight deleted text (shown in original)
+ * For right side: highlight added text (shown in compared)
+ */
+function applyDocxDiffHighlights(docxElement, side) {
+    if (!lastParagraphDiffs) return;
+
+    // Collect all diff texts to highlight
+    const textsToHighlight = [];
+
+    for (const result of lastParagraphDiffs) {
+        if (!result.hasDiff) continue;
+
+        for (const [op, text] of result.diffs) {
+            // Skip unchanged or empty text
+            if (op === 0 || !text.trim()) continue;
+
+            // Left side: show deleted (-1), Right side: show added (+1)
+            if (side === 'left' && op === -1) {
+                textsToHighlight.push({ text: text, type: 'removed' });
+            } else if (side === 'right' && op === 1) {
+                textsToHighlight.push({ text: text, type: 'added' });
+            }
+        }
+    }
+
+    // Apply highlights to the HTML content
+    if (textsToHighlight.length > 0) {
+        highlightTextsInElement(docxElement, textsToHighlight);
+    }
+}
+
+/**
+ * Highlight specific texts within an element
+ */
+function highlightTextsInElement(element, textsToHighlight) {
+    // For each text to highlight, find and wrap it
+    for (const item of textsToHighlight) {
+        const searchText = item.text;
+        if (!searchText || searchText.length < 2) continue; // Skip very short texts
+
+        const highlightClass = item.type === 'removed' ? 'docx-highlight-removed' : 'docx-highlight-added';
+
+        // Re-walk the tree for each search (since DOM changes)
+        const walker = document.createTreeWalker(
+            element,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+
+        let node;
+        let found = false;
+        while ((node = walker.nextNode()) && !found) {
+            const content = node.textContent;
+            if (!content) continue;
+
+            const index = content.indexOf(searchText);
+
+            if (index !== -1) {
+                const parent = node.parentNode;
+                if (!parent) continue; // Safety check
+
+                // Found the text, split and wrap
+                try {
+                    // Create document fragment with highlighted span
+                    const fragment = document.createDocumentFragment();
+
+                    // Text before match
+                    if (index > 0) {
+                        fragment.appendChild(document.createTextNode(content.substring(0, index)));
+                    }
+
+                    // Highlighted text
+                    const span = document.createElement('span');
+                    span.className = highlightClass;
+                    span.textContent = searchText;
+                    fragment.appendChild(span);
+
+                    // Text after match
+                    if (index + searchText.length < content.length) {
+                        fragment.appendChild(document.createTextNode(content.substring(index + searchText.length)));
+                    }
+
+                    parent.replaceChild(fragment, node);
+                    found = true;
+                } catch (e) {
+                    console.warn('Failed to highlight text:', searchText, e);
+                }
+            }
+        }
+    }
+}
 
 // Load PDF from URL for the PDF viewer
 async function loadPdfFromUrl(url, side) {
@@ -1599,41 +1806,121 @@ function syncScroll(source, target) {
 
 /**
  * Anchor-based scroll sync
- * Find the top-visible paragraph and scroll to matching paragraph on other side
+ * Find the top-visible element and scroll to matching element on other side
+ * Supports: .diff-paragraph, .docx-paragraph, .pdf-page-wrapper
  */
 function syncScrollByAnchor(source, target) {
-    // Get all paragraphs in source
-    const sourceParagraphs = source.querySelectorAll('.diff-paragraph');
-    if (sourceParagraphs.length === 0) return;
+    // Determine which type of elements to look for
+    const sourceSelector = getScrollableElementSelector(source);
+    const targetSelector = getScrollableElementSelector(target);
 
-    // Find the first visible paragraph
+    // If element types are incompatible (PDF pages vs DOCX paragraphs),
+    // use percentage-based sync instead
+    const isSourcePdf = sourceSelector === '.pdf-page-wrapper';
+    const isTargetPdf = targetSelector === '.pdf-page-wrapper';
+    const isSourceDocx = sourceSelector === '.docx-paragraph';
+    const isTargetDocx = targetSelector === '.docx-paragraph';
+
+    // Mixed PDF/DOCX: use percentage-based sync
+    if ((isSourcePdf && isTargetDocx) || (isSourceDocx && isTargetPdf)) {
+        syncScrollByPercentage(source, target);
+        return;
+    }
+
+    const sourceElements = source.querySelectorAll(sourceSelector);
+    if (sourceElements.length === 0) {
+        // Fallback to percentage if no elements found
+        syncScrollByPercentage(source, target);
+        return;
+    }
+
+    // Find the first visible element
     const sourceRect = source.getBoundingClientRect();
-    let topParagraph = null;
-    let topParagraphOffset = 0;
+    let topElement = null;
+    let topElementOffset = 0;
 
-    for (const p of sourceParagraphs) {
-        const pRect = p.getBoundingClientRect();
-        if (pRect.top >= sourceRect.top - 10) {
-            topParagraph = p;
+    for (const el of sourceElements) {
+        const elRect = el.getBoundingClientRect();
+        if (elRect.top >= sourceRect.top - 10) {
+            topElement = el;
             // Calculate offset from container top
-            topParagraphOffset = pRect.top - sourceRect.top;
+            topElementOffset = elRect.top - sourceRect.top;
             break;
         }
     }
 
-    if (!topParagraph) return;
-
-    // Get paragraph index
-    const paragraphIndex = Array.from(sourceParagraphs).indexOf(topParagraph);
-
-    // Find corresponding paragraph in target
-    const targetParagraphs = target.querySelectorAll('.diff-paragraph');
-    if (paragraphIndex < targetParagraphs.length) {
-        const targetParagraph = targetParagraphs[paragraphIndex];
-        // Use scrollTop instead of scrollIntoView to avoid triggering scroll events
-        const targetParagraphTop = targetParagraph.offsetTop - target.offsetTop;
-        target.scrollTop = targetParagraphTop - topParagraphOffset;
+    if (!topElement) {
+        syncScrollByPercentage(source, target);
+        return;
     }
+
+    // Get element index (use data-paragraph-idx if available, otherwise array index)
+    let elementIndex;
+    if (topElement.hasAttribute('data-paragraph-idx')) {
+        elementIndex = parseInt(topElement.getAttribute('data-paragraph-idx'));
+    } else {
+        elementIndex = Array.from(sourceElements).indexOf(topElement);
+    }
+
+    // Find corresponding element in target
+    const targetElements = target.querySelectorAll(targetSelector);
+
+    if (targetElements.length === 0) {
+        syncScrollByPercentage(source, target);
+        return;
+    }
+
+    // For same-type elements, use direct index mapping
+    // For different counts, use ratio
+    const sourceTotal = sourceElements.length;
+    const targetTotal = targetElements.length;
+
+    let targetIndex;
+    if (sourceTotal === targetTotal) {
+        // Same count: direct mapping
+        targetIndex = elementIndex;
+    } else {
+        // Different count: ratio mapping
+        targetIndex = Math.min(
+            Math.floor((elementIndex / sourceTotal) * targetTotal),
+            targetTotal - 1
+        );
+    }
+
+    if (targetIndex >= 0 && targetIndex < targetElements.length) {
+        const targetElement = targetElements[targetIndex];
+        // Calculate scroll position
+        const targetElementTop = targetElement.offsetTop - target.offsetTop;
+        target.scrollTop = Math.max(0, targetElementTop - topElementOffset);
+    }
+}
+
+/**
+ * Percentage-based scroll sync helper
+ */
+function syncScrollByPercentage(source, target) {
+    const scrollPercentage = source.scrollTop / (source.scrollHeight - source.clientHeight);
+    const targetScrollTop = scrollPercentage * (target.scrollHeight - target.clientHeight);
+
+    if (!isNaN(targetScrollTop) && isFinite(targetScrollTop)) {
+        target.scrollTop = targetScrollTop;
+    }
+}
+
+/**
+ * Get the CSS selector for scrollable elements in a container
+ */
+function getScrollableElementSelector(container) {
+    // Check what type of content is in the container
+    if (container.querySelector('.docx-paragraph')) {
+        return '.docx-paragraph';
+    } else if (container.querySelector('.pdf-page-wrapper')) {
+        return '.pdf-page-wrapper';
+    } else if (container.querySelector('.diff-paragraph')) {
+        return '.diff-paragraph';
+    }
+    // Fallback
+    return '.diff-paragraph';
 }
 
 /**

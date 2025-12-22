@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  contractdiff:
+    image: as2674as/contractdiff:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: contractdiff
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml:ro
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
