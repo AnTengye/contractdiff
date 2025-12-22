@@ -49,13 +49,21 @@ func main() {
 	// CORS middleware
 	router.Use(corsMiddleware())
 
-	// Serve static files from parent directory
-	router.Static("/static", "../")
-	router.StaticFile("/", "../index.html")
-	router.StaticFile("/login.html", "../login.html")
-	router.StaticFile("/index.html", "../index.html")
-	router.StaticFile("/app.js", "../app.js")
-	router.StaticFile("/styles.css", "../styles.css")
+	// Determine static files directory
+	// In Docker, files are in current directory; in local dev, they're in parent directory
+	staticDir := "./"
+	if _, err := os.Stat("./index.html"); os.IsNotExist(err) {
+		staticDir = "../"
+	}
+	log.Printf("Serving static files from: %s", staticDir)
+
+	// Serve static files
+	router.Static("/static", staticDir)
+	router.StaticFile("/", staticDir+"index.html")
+	router.StaticFile("/login.html", staticDir+"login.html")
+	router.StaticFile("/index.html", staticDir+"index.html")
+	router.StaticFile("/app.js", staticDir+"app.js")
+	router.StaticFile("/styles.css", staticDir+"styles.css")
 
 	// Public routes
 	api := router.Group("/api")
