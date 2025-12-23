@@ -1,8 +1,8 @@
 package handler
 
 import (
-	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -32,6 +32,7 @@ func NewContractHandler(minioSvc *service.MinioService, mineruSvc *service.Miner
 // Upload handles contract file upload
 func (h *ContractHandler) Upload(c *gin.Context) {
 	tenant := middleware.GetTenant(c)
+	requestID := middleware.GetRequestID(c)
 
 	// Get file from form
 	file, header, err := c.Request.FormFile("file")
@@ -82,11 +83,24 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 	// Generate unique ID and object name
 	contractID := uuid.New().String()
-	objectName := fmt.Sprintf("%s/%s/%s", tenant, contractID, header.Filename)
+	objectName := tenant + "/" + contractID + "/" + header.Filename
+
+	slog.Info("uploading contract file",
+		"request_id", requestID,
+		"tenant", tenant,
+		"contract_id", contractID,
+		"filename", header.Filename,
+		"size", header.Size,
+	)
 
 	// Upload to MINIO
 	err = h.minioService.UploadFile(c.Request.Context(), objectName, file, header.Size, contentType)
 	if err != nil {
+		slog.Error("failed to upload file to MINIO",
+			"request_id", requestID,
+			"contract_id", contractID,
+			"error", err,
+		)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file: " + err.Error()})
 		return
 	}
@@ -94,6 +108,11 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	// Get presigned URL for MinerU
 	pdfURL, err := h.minioService.GetPresignedURL(c.Request.Context(), objectName)
 	if err != nil {
+		slog.Error("failed to generate presigned URL",
+			"request_id", requestID,
+			"contract_id", contractID,
+			"error", err,
+		)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate URL: " + err.Error()})
 		return
 	}
@@ -110,6 +129,12 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	}
 	h.store.Save(contract)
 
+	slog.Info("contract uploaded successfully",
+		"request_id", requestID,
+		"contract_id", contractID,
+		"tenant", tenant,
+	)
+
 	// Call MinerU API
 	go h.processMineruTask(contract, pdfURL)
 
@@ -123,7 +148,10 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 // processMineruTask handles the MinerU extraction task asynchronously
 func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL string) {
-	fmt.Printf("[MinerU] Starting task for contract %s, PDF URL: %s\n", contract.ID, pdfURL)
+	slog.Info("starting MinerU task",
+		"contract_id", contract.ID,
+		"pdf_url", pdfURL,
+	)
 
 	// Update status to processing
 	h.store.UpdateStatus(contract.ID, model.StatusProcessing, "")
@@ -131,12 +159,18 @@ func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL str
 	// Create task
 	resp, err := h.mineruService.CreateTask(pdfURL, contract.ID)
 	if err != nil {
-		fmt.Printf("[MinerU] Failed to create task: %v\n", err)
+		slog.Error("failed to create MinerU task",
+			"contract_id", contract.ID,
+			"error", err,
+		)
 		h.store.UpdateStatus(contract.ID, model.StatusFailed, err.Error())
 		return
 	}
 
-	fmt.Printf("[MinerU] Task created successfully, TaskID: %s\n", resp.Data.TaskID)
+	slog.Info("MinerU task created",
+		"contract_id", contract.ID,
+		"task_id", resp.Data.TaskID,
+	)
 
 	// Update task ID
 	contract.MineruTaskID = resp.Data.TaskID
@@ -148,7 +182,10 @@ func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL str
 
 // pollTaskResult polls for task completion
 func (h *ContractHandler) pollTaskResult(contract *model.Contract) {
-	fmt.Printf("[MinerU] Starting to poll for contract %s, TaskID: %s\n", contract.ID, contract.MineruTaskID)
+	slog.Info("starting task polling",
+		"contract_id", contract.ID,
+		"task_id", contract.MineruTaskID,
+	)
 
 	maxAttempts := 60 // 5 minutes with 5 second intervals
 	for i := 0; i < maxAttempts; i++ {
@@ -156,42 +193,71 @@ func (h *ContractHandler) pollTaskResult(contract *model.Contract) {
 
 		status, err := h.mineruService.GetTaskStatus(contract.MineruTaskID)
 		if err != nil {
-			fmt.Printf("[MinerU] Poll attempt %d failed: %v\n", i+1, err)
+			slog.Warn("poll attempt failed",
+				"contract_id", contract.ID,
+				"attempt", i+1,
+				"error", err,
+			)
 			continue
 		}
 
-		fmt.Printf("[MinerU] Poll attempt %d - State: %s, ZipURL: %s\n", i+1, status.Data.State, status.Data.FullZipURL)
+		slog.Debug("poll status",
+			"contract_id", contract.ID,
+			"attempt", i+1,
+			"state", status.Data.State,
+			"zip_url", status.Data.FullZipURL,
+		)
 
 		switch status.Data.State {
 		case "done":
 			// Fetch JSON from ZIP
 			if status.Data.FullZipURL != "" {
-				fmt.Printf("[MinerU] Downloading and extracting ZIP from: %s\n", status.Data.FullZipURL)
+				slog.Info("downloading and extracting ZIP",
+					"contract_id", contract.ID,
+					"zip_url", status.Data.FullZipURL,
+				)
 				jsonData, err := h.mineruService.FetchZipAndExtractJSON(status.Data.FullZipURL)
 				if err != nil {
-					fmt.Printf("[MinerU] Failed to fetch/extract JSON: %v\n", err)
+					slog.Error("failed to fetch/extract JSON",
+						"contract_id", contract.ID,
+						"error", err,
+					)
 					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch JSON: "+err.Error())
 					return
 				}
-				fmt.Printf("[MinerU] JSON extracted successfully, keys: %v\n", getMapKeys(jsonData))
+				slog.Info("JSON extracted successfully",
+					"contract_id", contract.ID,
+					"keys", getMapKeys(jsonData),
+				)
 				h.store.UpdateJSONData(contract.ID, jsonData)
 			} else {
-				fmt.Printf("[MinerU] No ZIP URL available, marking as completed without JSON\n")
+				slog.Info("task completed without ZIP URL",
+					"contract_id", contract.ID,
+				)
 				h.store.UpdateStatus(contract.ID, model.StatusCompleted, "")
 			}
 			return
 		case "failed":
-			fmt.Printf("[MinerU] Task failed: %s\n", status.Data.ErrorMsg)
+			slog.Error("MinerU task failed",
+				"contract_id", contract.ID,
+				"error_msg", status.Data.ErrorMsg,
+			)
 			h.store.UpdateStatus(contract.ID, model.StatusFailed, status.Data.ErrorMsg)
 			return
 		case "running":
 			if status.Data.ExtractProgress.TotalPages > 0 {
-				fmt.Printf("[MinerU] Progress: %d/%d pages\n", status.Data.ExtractProgress.ExtractedPages, status.Data.ExtractProgress.TotalPages)
+				slog.Debug("extraction progress",
+					"contract_id", contract.ID,
+					"extracted_pages", status.Data.ExtractProgress.ExtractedPages,
+					"total_pages", status.Data.ExtractProgress.TotalPages,
+				)
 			}
 		}
 	}
 
-	fmt.Printf("[MinerU] Task polling timeout for contract %s\n", contract.ID)
+	slog.Error("task polling timeout",
+		"contract_id", contract.ID,
+	)
 	h.store.UpdateStatus(contract.ID, model.StatusFailed, "Task polling timeout")
 }
 
@@ -260,6 +326,7 @@ func (h *ContractHandler) GetStatus(c *gin.Context) {
 func (h *ContractHandler) Delete(c *gin.Context) {
 	tenant := middleware.GetTenant(c)
 	id := c.Param("id")
+	requestID := middleware.GetRequestID(c)
 
 	contract := h.store.Get(id)
 	if contract == nil || contract.Tenant != tenant {
@@ -268,6 +335,12 @@ func (h *ContractHandler) Delete(c *gin.Context) {
 	}
 
 	h.store.Delete(id)
+
+	slog.Info("contract deleted",
+		"request_id", requestID,
+		"contract_id", id,
+		"tenant", tenant,
+	)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Contract deleted"})
 }

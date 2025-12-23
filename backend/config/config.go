@@ -11,7 +11,14 @@ type Config struct {
 	Minio  MinioConfig  `yaml:"minio"`
 	Mineru MineruConfig `yaml:"mineru"`
 	Auth   AuthConfig   `yaml:"auth"`
+	Log    LogConfig    `yaml:"log"`
+	Store  StoreConfig  `yaml:"store"`
 	Users  []User       `yaml:"users"`
+}
+
+type LogConfig struct {
+	Level  string `yaml:"level"`  // debug, info, warn, error
+	Format string `yaml:"format"` // json, text
 }
 
 type ServerConfig struct {
@@ -46,6 +53,10 @@ type User struct {
 	Tenant   string `yaml:"tenant"`
 }
 
+type StoreConfig struct {
+	MaxContracts int `yaml:"max_contracts"` // Maximum contracts to keep in memory, 0 = unlimited
+}
+
 var GlobalConfig *Config
 
 func Load(path string) (*Config, error) {
@@ -71,6 +82,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Mineru.ModelVersion == "" {
 		cfg.Mineru.ModelVersion = "vlm"
+	}
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = "info"
+	}
+	if cfg.Log.Format == "" {
+		cfg.Log.Format = "text"
 	}
 
 	GlobalConfig = &cfg

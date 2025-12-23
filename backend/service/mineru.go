@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -144,8 +145,11 @@ func (s *MineruService) GetTaskStatus(taskID string) (*MineruTaskStatusResponse,
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Log raw response for debugging
-	fmt.Printf("[MinerU] Raw status response: %s\n", string(body))
+	// Log raw response for debugging at debug level
+	slog.Debug("MinerU status response",
+		"task_id", taskID,
+		"body", string(body),
+	)
 
 	var result MineruTaskStatusResponse
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -191,7 +195,7 @@ func (s *MineruService) FetchJSONResult(jsonURL string) (map[string]interface{},
 
 // FetchZipAndExtractJSON downloads the ZIP file and extracts the JSON content
 func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interface{}, error) {
-	fmt.Printf("[MinerU] Downloading ZIP from: %s\n", zipURL)
+	slog.Debug("downloading ZIP", "url", zipURL)
 
 	resp, err := s.httpClient.Get(zipURL)
 	if err != nil {
@@ -205,7 +209,7 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 		return nil, fmt.Errorf("failed to read ZIP: %w", err)
 	}
 
-	fmt.Printf("[MinerU] ZIP downloaded, size: %d bytes\n", len(zipData))
+	slog.Debug("ZIP downloaded", "size_bytes", len(zipData))
 
 	// Open the ZIP archive
 	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
@@ -218,12 +222,12 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
 
 	for _, file := range zipReader.File {
-		fmt.Printf("[MinerU] ZIP contains file: %s\n", file.Name)
+		slog.Debug("ZIP file entry", "name", file.Name)
 
 		// Check if this is one of the JSON files we're looking for
 		for _, targetFile := range jsonFiles {
 			if strings.HasSuffix(file.Name, targetFile) {
-				fmt.Printf("[MinerU] Found target JSON: %s\n", file.Name)
+				slog.Debug("found target JSON", "file", file.Name)
 
 				rc, err := file.Open()
 				if err != nil {
@@ -237,11 +241,11 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 				}
 
 				if err := json.Unmarshal(content, &jsonData); err != nil {
-					fmt.Printf("[MinerU] Failed to parse %s: %v\n", file.Name, err)
+					slog.Debug("failed to parse JSON file", "file", file.Name, "error", err)
 					continue
 				}
 
-				fmt.Printf("[MinerU] Successfully parsed JSON from %s\n", file.Name)
+				slog.Info("successfully parsed JSON", "file", file.Name)
 				return jsonData, nil
 			}
 		}
@@ -250,7 +254,7 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	// If no specific JSON found, try any .json file
 	for _, file := range zipReader.File {
 		if strings.HasSuffix(file.Name, ".json") {
-			fmt.Printf("[MinerU] Trying fallback JSON: %s\n", file.Name)
+			slog.Debug("trying fallback JSON", "file", file.Name)
 
 			rc, err := file.Open()
 			if err != nil {

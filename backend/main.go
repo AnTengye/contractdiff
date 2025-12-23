@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/AnTengye/contractdiff/backend/handler"
 	"github.com/AnTengye/contractdiff/backend/middleware"
+	"github.com/AnTengye/contractdiff/backend/pkg/logger"
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/gin-gonic/gin"
 )
@@ -22,21 +23,35 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
+
+	// Initialize logger
+	logger.Init(&logger.Config{
+		Level:  cfg.Log.Level,
+		Format: cfg.Log.Format,
+	})
+
+	slog.Info("configuration loaded successfully")
 
 	// Initialize services
 	minioSvc, err := service.NewMinioService(&cfg.Minio)
 	if err != nil {
-		log.Fatalf("Failed to initialize MINIO service: %v", err)
+		slog.Error("failed to initialize MINIO service", "error", err)
+		os.Exit(1)
 	}
 
 	// Ensure bucket exists
 	if err := minioSvc.EnsureBucket(context.Background()); err != nil {
-		log.Fatalf("Failed to ensure MINIO bucket: %v", err)
+		slog.Error("failed to ensure MINIO bucket", "error", err)
+		os.Exit(1)
 	}
 
 	mineruSvc := service.NewMineruService(&cfg.Mineru)
+
+	// Initialize contract store with config
+	service.InitContractStore(&cfg.Store)
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(cfg)
@@ -45,21 +60,22 @@ func main() {
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.Default()
+	router := gin.New() // Use New() instead of Default() to avoid default middleware
 
-	// CORS middleware
-	router.Use(corsMiddleware())
-
-	// Cache control middleware for static files
-	router.Use(cacheMiddleware())
+	// Add custom middleware
+	router.Use(middleware.RequestID())                 // Request ID for tracing
+	router.Use(middleware.Recovery())                  // Panic recovery
+	router.Use(middleware.RequestLogger())             // Access logging
+	router.Use(corsMiddleware())                       // CORS
+	router.Use(cacheMiddleware())                      // Cache control
+	router.Use(middleware.RateLimit(100, time.Minute)) // Rate limiting: 100 requests per minute
 
 	// Determine static files directory
-	// In Docker, files are in current directory; in local dev, they're in parent directory
 	staticDir := "./"
 	if _, err := os.Stat("./index.html"); os.IsNotExist(err) {
 		staticDir = "../"
 	}
-	log.Printf("Serving static files from: %s", staticDir)
+	slog.Info("serving static files", "directory", staticDir)
 
 	// Serve static files
 	router.Static("/static", staticDir)
@@ -68,6 +84,14 @@ func main() {
 	router.StaticFile("/index.html", staticDir+"index.html")
 	router.StaticFile("/app.js", staticDir+"app.js")
 	router.StaticFile("/styles.css", staticDir+"styles.css")
+
+	// Health check endpoint
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "ok",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
 
 	// Public routes
 	api := router.Group("/api")
@@ -90,15 +114,19 @@ func main() {
 
 	// Create server
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler: router,
+		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
+		Handler:      router,
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("Server starting on port %d...", cfg.Server.Port)
+		slog.Info("server starting", "port", cfg.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+			slog.Error("failed to start server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -106,16 +134,17 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	slog.Info("shutting down server...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
+		slog.Error("server forced to shutdown", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("Server exited")
+	slog.Info("server exited gracefully")
 }
 
 // corsMiddleware handles CORS headers
@@ -123,8 +152,9 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -136,8 +166,6 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 // cacheMiddleware sets cache control headers for static files
-// Static files (js, css, html) are cached for 1 day
-// API responses are not cached
 func cacheMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
@@ -151,13 +179,11 @@ func cacheMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Set cache headers for static files (1 day = 86400 seconds)
+		// Set cache headers for static files (1 hour)
 		if strings.HasSuffix(path, ".js") ||
 			strings.HasSuffix(path, ".css") ||
 			strings.HasSuffix(path, ".html") ||
 			path == "/" {
-			// max-age=86400: cache for 1 day
-			// must-revalidate: revalidate after cache expires
 			c.Header("Cache-Control", "public, max-age=3600, must-revalidate")
 		}
 
