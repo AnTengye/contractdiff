@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,6 +49,9 @@ func main() {
 
 	// CORS middleware
 	router.Use(corsMiddleware())
+
+	// Cache control middleware for static files
+	router.Use(cacheMiddleware())
 
 	// Determine static files directory
 	// In Docker, files are in current directory; in local dev, they're in parent directory
@@ -125,6 +129,36 @@ func corsMiddleware() gin.HandlerFunc {
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
+		}
+
+		c.Next()
+	}
+}
+
+// cacheMiddleware sets cache control headers for static files
+// Static files (js, css, html) are cached for 1 day
+// API responses are not cached
+func cacheMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+
+		// Skip caching for API routes
+		if strings.HasPrefix(path, "/api") {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+			c.Header("Pragma", "no-cache")
+			c.Header("Expires", "0")
+			c.Next()
+			return
+		}
+
+		// Set cache headers for static files (1 day = 86400 seconds)
+		if strings.HasSuffix(path, ".js") ||
+			strings.HasSuffix(path, ".css") ||
+			strings.HasSuffix(path, ".html") ||
+			path == "/" {
+			// max-age=86400: cache for 1 day
+			// must-revalidate: revalidate after cache expires
+			c.Header("Cache-Control", "public, max-age=3600, must-revalidate")
 		}
 
 		c.Next()
