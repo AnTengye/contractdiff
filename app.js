@@ -234,6 +234,102 @@ function updateCompareButton() {
 }
 
 // ===== JSON Parsing =====
+
+/**
+ * 检查文本是否以完整的句子结尾（以句号、问号、感叹号等结束）
+ * @param {string} text - 段落文本
+ * @returns {boolean} 是否以句子结束标点结尾
+ */
+function endsWithCompleteSentence(text) {
+    if (!text) return true;
+    const trimmed = text.trim();
+    // 中英文句子结束标点
+    const sentenceEndingPunctuation = /[。！？.!?；;：:]$/;
+    return sentenceEndingPunctuation.test(trimmed);
+}
+
+/**
+ * 检查文本是否以段落序号开头（如 1.、1.1、（一）、第一条 等）
+ * @param {string} text - 段落文本
+ * @returns {boolean} 是否以序号开头
+ */
+function startsWithSectionNumber(text) {
+    if (!text) return false;
+    const trimmed = text.trim();
+
+    const patterns = [
+        // 阿拉伯数字序号: 1. 1.1 1.1.1 1、 1）
+        /^\d+(?:\.\d+)*[\.\、）\)]\s*/,
+        // 中文数字序号: 一、 （一） 第一条 第一章
+        /^[（(]?[一二三四五六七八九十]+[）)、]\s*/,
+        /^第[一二三四五六七八九十\d]+[条章节款项]\s*/,
+        // 带括号的阿拉伯数字: (1) （1）
+        /^[（(]\d+[）)]\s*/,
+        // 字母序号: a. A. a) A)
+        /^[a-zA-Z][\.\）\)]\s*/,
+    ];
+
+    return patterns.some(pattern => pattern.test(trimmed));
+}
+
+/**
+ * 判断是否应该将前一个段落与当前段落合并
+ * @param {Object} prevParagraph - 前一个段落
+ * @param {Object} currentParagraph - 当前段落
+ * @returns {boolean} 是否应该合并
+ */
+function shouldMergeParagraphs(prevParagraph, currentParagraph) {
+    if (!prevParagraph || !currentParagraph) return false;
+
+    // 条件1：前一段落没有以句子结束标点结尾
+    if (endsWithCompleteSentence(prevParagraph.text)) return false;
+
+    // 条件2：当前段落不是以序号开头（如果以序号开头，说明是新的条款）
+    if (startsWithSectionNumber(currentParagraph.text)) return false;
+
+    // 条件3：当前段落位于新的页面开头（可选检查，主要依赖上面两个条件）
+    // 跨页的情况：pageIdx 不同
+    if (prevParagraph.pageIdx === currentParagraph.pageIdx) {
+        // 同一页内，通常不需要合并（除非是特殊的分割情况）
+        // 但如果前一段没有结束标点且后一段不是序号开头，也考虑合并
+        return true;
+    }
+
+    // 跨页情况：前一页最后一段未完成，下一页第一段是续接
+    return true;
+}
+
+/**
+ * 合并需要连接的段落
+ * @param {Array} paragraphs - 原始段落数组
+ * @returns {Array} 合并后的段落数组
+ */
+function mergeCrossPageParagraphs(paragraphs) {
+    if (paragraphs.length <= 1) return paragraphs;
+
+    const merged = [];
+    let i = 0;
+
+    while (i < paragraphs.length) {
+        let current = { ...paragraphs[i] };
+
+        // 检查是否需要与后续段落合并
+        while (i + 1 < paragraphs.length && shouldMergeParagraphs(current, paragraphs[i + 1])) {
+            // 合并文本
+            current.text = current.text + paragraphs[i + 1].text;
+            // 保留原始页码（使用起始页码）
+            // current.pageIdx 保持不变
+            i++;
+        }
+
+        merged.push(current);
+        i++;
+    }
+
+    console.log(`Paragraph merge: ${paragraphs.length} -> ${merged.length} paragraphs`);
+    return merged;
+}
+
 /**
  * 从 JSON 中提取所有文本段落
  * @param {Object} json - 解析后的 JSON 对象
@@ -289,8 +385,10 @@ function parseContractJSON(json) {
         }
     }
 
-    return paragraphs;
+    // 合并跨页分割的段落
+    return mergeCrossPageParagraphs(paragraphs);
 }
+
 
 /**
  * 将段落数组转换为纯文本
