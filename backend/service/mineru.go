@@ -16,6 +16,74 @@ import (
 	"github.com/AnTengye/contractdiff/backend/config"
 )
 
+// MinerU API error codes
+const (
+	MineruErrorTokenInvalid = "A0202" // Token 错误
+	MineruErrorTokenExpired = "A0211" // Token 过期
+	MineruErrorParamInvalid = -500    // 传参错误
+	MineruErrorServiceError = -10001  // 服务异常
+	MineruErrorRequestParam = -10002  // 请求参数错误
+	MineruErrorTaskNotFound = -60012  // 找不到任务
+	MineruErrorNoPermission = -60013  // 没有权限访问该任务
+	MineruErrorDailyLimit   = -60018  // 每日解析任务数量已达上限
+)
+
+// MineruAPIError represents a structured error from MinerU API
+type MineruAPIError struct {
+	Code        interface{} // Can be string (A0202, A0211) or int (-500, -60012, etc.)
+	Message     string
+	IsAuthError bool // True if error is related to authentication/token
+}
+
+func (e *MineruAPIError) Error() string {
+	return fmt.Sprintf("MinerU API error [%v]: %s", e.Code, e.Message)
+}
+
+// IsMineruAuthError checks if an error is a MinerU authentication error
+func IsMineruAuthError(err error) bool {
+	if mineruErr, ok := err.(*MineruAPIError); ok {
+		return mineruErr.IsAuthError
+	}
+	return false
+}
+
+// GetMineruErrorMessage returns a user-friendly error message
+func GetMineruErrorMessage(err error) string {
+	if mineruErr, ok := err.(*MineruAPIError); ok {
+		switch mineruErr.Code {
+		case MineruErrorTokenInvalid:
+			return "解析工具 Token 错误，请检查配置"
+		case MineruErrorTokenExpired:
+			return "解析工具 Token 已过期，请更新 Token"
+		case MineruErrorDailyLimit:
+			return "解析工具每日解析配额已用完，请明日再试"
+		case MineruErrorTaskNotFound:
+			return "解析任务不存在或已被删除"
+		case MineruErrorNoPermission:
+			return "没有权限访问该解析任务"
+		default:
+			return mineruErr.Message
+		}
+	}
+	return err.Error()
+}
+
+// parseMineruError creates a structured error from API response
+func parseMineruError(code interface{}, message string) *MineruAPIError {
+	err := &MineruAPIError{
+		Code:    code,
+		Message: message,
+	}
+
+	// Check for auth errors
+	switch code {
+	case MineruErrorTokenInvalid, MineruErrorTokenExpired:
+		err.IsAuthError = true
+	}
+
+	return err
+}
+
 type MineruService struct {
 	config     *config.MineruConfig
 	httpClient *http.Client
@@ -32,8 +100,8 @@ type MineruTaskRequest struct {
 
 // MineruTaskResponse represents the response from task creation
 type MineruTaskResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
+	Code    json.RawMessage `json:"code"` // Can be int (0) or string ("A0202")
+	Message string          `json:"msg"`
 	Data    struct {
 		TaskID string `json:"task_id"`
 	} `json:"data"`
@@ -41,9 +109,9 @@ type MineruTaskResponse struct {
 
 // MineruTaskStatusResponse represents the task status query response
 type MineruTaskStatusResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
-	TraceID string `json:"trace_id"`
+	Code    json.RawMessage `json:"code"` // Can be int (0) or string ("A0202")
+	Message string          `json:"msg"`
+	TraceID string          `json:"trace_id"`
 	Data    struct {
 		TaskID          string `json:"task_id"`
 		DataID          string `json:"data_id"`
@@ -57,6 +125,30 @@ type MineruTaskStatusResponse struct {
 			StartTime      string `json:"start_time"`
 		} `json:"extract_progress,omitempty"`
 	} `json:"data"`
+}
+
+// parseCodeValue extracts the code value from json.RawMessage
+func parseCodeValue(raw json.RawMessage) interface{} {
+	// Try as int first
+	var intCode int
+	if err := json.Unmarshal(raw, &intCode); err == nil {
+		return intCode
+	}
+	// Try as string
+	var strCode string
+	if err := json.Unmarshal(raw, &strCode); err == nil {
+		return strCode
+	}
+	return string(raw)
+}
+
+// isSuccessCode checks if the code indicates success (0)
+func isSuccessCode(raw json.RawMessage) bool {
+	var intCode int
+	if err := json.Unmarshal(raw, &intCode); err == nil {
+		return intCode == 0
+	}
+	return false
 }
 
 // MineruCallbackPayload represents the callback payload from MinerU
@@ -117,8 +209,8 @@ func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, 
 		return nil, fmt.Errorf("failed to parse response: %w, body: %s", err, string(body))
 	}
 
-	if result.Code != 0 {
-		return nil, fmt.Errorf("MinerU API error: %s", result.Message)
+	if !isSuccessCode(result.Code) {
+		return nil, parseMineruError(parseCodeValue(result.Code), result.Message)
 	}
 
 	return &result, nil
@@ -156,8 +248,8 @@ func (s *MineruService) GetTaskStatus(taskID string) (*MineruTaskStatusResponse,
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if result.Code != 0 {
-		return nil, fmt.Errorf("MinerU API error: %s", result.Message)
+	if !isSuccessCode(result.Code) {
+		return nil, parseMineruError(parseCodeValue(result.Code), result.Message)
 	}
 
 	return &result, nil

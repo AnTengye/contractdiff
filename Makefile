@@ -37,10 +37,10 @@ clean: ## Remove local Docker images
 run: ## Run Docker container locally
 	docker run -d \
 		--name $(APP_NAME) \
-		-p 8080:8080 \
+		-p 28080:8080 \
 		-v $(PWD)/backend/config.yaml:/app/config.yaml:ro \
 		$(IMAGE):latest
-	@echo "Container started on http://localhost:8080"
+	@echo "Container started on http://localhost:28080"
 
 stop: ## Stop and remove local container
 	-docker stop $(APP_NAME) 2>/dev/null

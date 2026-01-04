@@ -43,14 +43,8 @@ func TestMineruServiceCreateTask(t *testing.T) {
 		}
 
 		// Return success response
-		response := MineruTaskResponse{
-			Code:    0,
-			Message: "success",
-		}
-		response.Data.TaskID = "task-123"
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		w.Write([]byte(`{"code":0,"msg":"success","data":{"task_id":"task-123"}}`))
 	}))
 	defer server.Close()
 
@@ -83,9 +77,8 @@ func TestMineruServiceCreateTaskWithCallback(t *testing.T) {
 			t.Errorf("Expected seed, got '%s'", reqBody.Seed)
 		}
 
-		response := MineruTaskResponse{Code: 0}
-		response.Data.TaskID = "task-456"
-		json.NewEncoder(w).Encode(response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"msg":"success","data":{"task_id":"task-456"}}`))
 	}))
 	defer server.Close()
 
@@ -107,11 +100,8 @@ func TestMineruServiceCreateTaskWithCallback(t *testing.T) {
 
 func TestMineruServiceCreateTaskError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := MineruTaskResponse{
-			Code:    1,
-			Message: "API error",
-		}
-		json.NewEncoder(w).Encode(response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":1,"msg":"API error"}`))
 	}))
 	defer server.Close()
 
@@ -137,14 +127,8 @@ func TestMineruServiceGetTaskStatus(t *testing.T) {
 			t.Errorf("Expected /extract/task/task-123, got %s", r.URL.Path)
 		}
 
-		response := MineruTaskStatusResponse{
-			Code: 0,
-		}
-		response.Data.TaskID = "task-123"
-		response.Data.State = "done"
-		response.Data.FullZipURL = "http://example.com/result.zip"
-
-		json.NewEncoder(w).Encode(response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"msg":"success","data":{"task_id":"task-123","state":"done","full_zip_url":"http://example.com/result.zip"}}`))
 	}))
 	defer server.Close()
 
@@ -169,11 +153,8 @@ func TestMineruServiceGetTaskStatus(t *testing.T) {
 
 func TestMineruServiceGetTaskStatusError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := MineruTaskStatusResponse{
-			Code:    1,
-			Message: "Task not found",
-		}
-		json.NewEncoder(w).Encode(response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":-60012,"msg":"Task not found"}`))
 	}))
 	defer server.Close()
 
@@ -358,5 +339,143 @@ func TestMineruServiceFetchZipAndExtractJSONInvalidZip(t *testing.T) {
 	_, err := svc.FetchZipAndExtractJSON(server.URL)
 	if err == nil {
 		t.Error("Expected error for invalid ZIP")
+	}
+}
+
+// Tests for MinerU error handling
+func TestMineruServiceTokenExpiredError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":"A0211","msg":"Token 过期"}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.MineruConfig{
+		APIURL:   server.URL,
+		APIToken: "expired-token",
+	}
+
+	svc := NewMineruService(cfg)
+	_, err := svc.CreateTask("http://example.com/test.pdf", "data-123")
+
+	if err == nil {
+		t.Fatal("Expected error for expired token")
+	}
+
+	// Check it's an auth error
+	if !IsMineruAuthError(err) {
+		t.Error("Expected IsMineruAuthError to return true for A0211")
+	}
+
+	// Check user-friendly message
+	msg := GetMineruErrorMessage(err)
+	if msg != "解析工具 Token 已过期，请更新 Token" {
+		t.Errorf("Unexpected message: %s", msg)
+	}
+}
+
+func TestMineruServiceTokenInvalidError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":"A0202","msg":"Token 错误"}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.MineruConfig{
+		APIURL:   server.URL,
+		APIToken: "invalid-token",
+	}
+
+	svc := NewMineruService(cfg)
+	_, err := svc.GetTaskStatus("task-123")
+
+	if err == nil {
+		t.Fatal("Expected error for invalid token")
+	}
+
+	if !IsMineruAuthError(err) {
+		t.Error("Expected IsMineruAuthError to return true for A0202")
+	}
+
+	msg := GetMineruErrorMessage(err)
+	if msg != "解析工具 Token 错误，请检查配置" {
+		t.Errorf("Unexpected message: %s", msg)
+	}
+}
+
+func TestMineruServiceDailyLimitError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":-60018,"msg":"每日解析任务数量已达上限"}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.MineruConfig{
+		APIURL:   server.URL,
+		APIToken: "test-token",
+	}
+
+	svc := NewMineruService(cfg)
+	_, err := svc.CreateTask("http://example.com/test.pdf", "data-123")
+
+	if err == nil {
+		t.Fatal("Expected error for daily limit")
+	}
+
+	// Daily limit is not an auth error
+	if IsMineruAuthError(err) {
+		t.Error("Daily limit should not be an auth error")
+	}
+
+	msg := GetMineruErrorMessage(err)
+	if msg != "解析工具每日解析配额已用完，请明日再试" {
+		t.Errorf("Unexpected message: %s", msg)
+	}
+}
+
+func TestIsMineruAuthError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"regular error", &MineruAPIError{Code: -500, Message: "error"}, false},
+		{"token expired", &MineruAPIError{Code: "A0211", Message: "expired", IsAuthError: true}, true},
+		{"token invalid", &MineruAPIError{Code: "A0202", Message: "invalid", IsAuthError: true}, true},
+		{"task not found", &MineruAPIError{Code: -60012, Message: "not found"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsMineruAuthError(tt.err)
+			if result != tt.expected {
+				t.Errorf("IsMineruAuthError() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetMineruErrorMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{"token expired", &MineruAPIError{Code: "A0211", Message: "Token 过期"}, "解析工具 Token 已过期，请更新 Token"},
+		{"token invalid", &MineruAPIError{Code: "A0202", Message: "Token 错误"}, "解析工具 Token 错误，请检查配置"},
+		{"daily limit", &MineruAPIError{Code: MineruErrorDailyLimit, Message: "limit"}, "解析工具每日解析配额已用完，请明日再试"},
+		{"task not found", &MineruAPIError{Code: MineruErrorTaskNotFound, Message: "not found"}, "解析任务不存在或已被删除"},
+		{"no permission", &MineruAPIError{Code: MineruErrorNoPermission, Message: "no permission"}, "没有权限访问该解析任务"},
+		{"other error", &MineruAPIError{Code: -999, Message: "Unknown error"}, "Unknown error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetMineruErrorMessage(tt.err)
+			if result != tt.expected {
+				t.Errorf("GetMineruErrorMessage() = %s, expected %s", result, tt.expected)
+			}
+		})
 	}
 }

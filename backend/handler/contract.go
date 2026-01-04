@@ -162,8 +162,11 @@ func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL str
 		slog.Error("failed to create MinerU task",
 			"contract_id", contract.ID,
 			"error", err,
+			"is_auth_error", service.IsMineruAuthError(err),
 		)
-		h.store.UpdateStatus(contract.ID, model.StatusFailed, err.Error())
+		// Use user-friendly error message
+		errorMsg := service.GetMineruErrorMessage(err)
+		h.store.UpdateStatus(contract.ID, model.StatusFailed, errorMsg)
 		return
 	}
 
@@ -193,6 +196,18 @@ func (h *ContractHandler) pollTaskResult(contract *model.Contract) {
 
 		status, err := h.mineruService.GetTaskStatus(contract.MineruTaskID)
 		if err != nil {
+			// Check if this is an auth error (token expired/invalid) - fail fast
+			if service.IsMineruAuthError(err) {
+				slog.Error("MinerU authentication error - stopping poll",
+					"contract_id", contract.ID,
+					"error", err,
+				)
+				errorMsg := service.GetMineruErrorMessage(err)
+				h.store.UpdateStatus(contract.ID, model.StatusFailed, errorMsg)
+				return
+			}
+
+			// For other errors, log and continue polling
 			slog.Warn("poll attempt failed",
 				"contract_id", contract.ID,
 				"attempt", i+1,

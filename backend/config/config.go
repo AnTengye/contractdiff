@@ -7,13 +7,14 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig `yaml:"server"`
-	Minio  MinioConfig  `yaml:"minio"`
-	Mineru MineruConfig `yaml:"mineru"`
-	Auth   AuthConfig   `yaml:"auth"`
-	Log    LogConfig    `yaml:"log"`
-	Store  StoreConfig  `yaml:"store"`
-	Users  []User       `yaml:"users"`
+	Server       ServerConfig       `yaml:"server"`
+	Minio        MinioConfig        `yaml:"minio"`
+	Mineru       MineruConfig       `yaml:"mineru"`
+	Auth         AuthConfig         `yaml:"auth"`
+	Log          LogConfig          `yaml:"log"`
+	Store        StoreConfig        `yaml:"store"`
+	Notification NotificationConfig `yaml:"notification"`
+	Users        []User             `yaml:"users"`
 }
 
 type LogConfig struct {
@@ -35,11 +36,13 @@ type MinioConfig struct {
 }
 
 type MineruConfig struct {
-	APIURL       string `yaml:"api_url"`
-	APIToken     string `yaml:"api_token"`
-	ModelVersion string `yaml:"model_version"`
-	CallbackURL  string `yaml:"callback_url"`
-	Seed         string `yaml:"seed"`
+	APIURL         string `yaml:"api_url"`
+	APIToken       string `yaml:"api_token"`
+	ModelVersion   string `yaml:"model_version"`
+	CallbackURL    string `yaml:"callback_url"`
+	Seed           string `yaml:"seed"`
+	TokenCreatedAt string `yaml:"token_created_at"` // RFC3339 format, when token was created/refreshed
+	TokenValidDays int    `yaml:"token_valid_days"` // Token validity period in days, default 14
 }
 
 type AuthConfig struct {
@@ -55,6 +58,25 @@ type User struct {
 
 type StoreConfig struct {
 	MaxContracts int `yaml:"max_contracts"` // Maximum contracts to keep in memory, 0 = unlimited
+}
+
+// NotificationConfig contains settings for webhook notifications
+type NotificationConfig struct {
+	DingTalk           DingTalkConfig `yaml:"dingtalk"`
+	Feishu             FeishuConfig   `yaml:"feishu"`
+	CheckIntervalHours int            `yaml:"check_interval_hours"` // How often to check, default 12
+}
+
+// DingTalkConfig contains DingTalk webhook settings
+type DingTalkConfig struct {
+	WebhookURL string `yaml:"webhook_url"`
+	Secret     string `yaml:"secret,omitempty"` // For signed webhooks
+}
+
+// FeishuConfig contains Feishu webhook settings
+type FeishuConfig struct {
+	WebhookURL string `yaml:"webhook_url"`
+	Secret     string `yaml:"secret,omitempty"` // For signed webhooks
 }
 
 var GlobalConfig *Config
@@ -88,6 +110,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Log.Format == "" {
 		cfg.Log.Format = "text"
+	}
+	if cfg.Mineru.TokenValidDays == 0 {
+		cfg.Mineru.TokenValidDays = 14
+	}
+	if cfg.Notification.CheckIntervalHours == 0 {
+		cfg.Notification.CheckIntervalHours = 12
 	}
 
 	GlobalConfig = &cfg

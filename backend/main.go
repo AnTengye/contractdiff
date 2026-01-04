@@ -15,6 +15,7 @@ import (
 	"github.com/AnTengye/contractdiff/backend/handler"
 	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/AnTengye/contractdiff/backend/pkg/logger"
+	"github.com/AnTengye/contractdiff/backend/pkg/notify"
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/gin-gonic/gin"
 )
@@ -52,6 +53,11 @@ func main() {
 
 	// Initialize contract store with config
 	service.InitContractStore(&cfg.Store)
+
+	// Initialize notification manager and token expiration checker
+	notifyManager := notify.NewManager(&cfg.Notification)
+	tokenChecker := service.NewTokenChecker(cfg, notifyManager)
+	tokenChecker.Start()
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(cfg)
@@ -143,6 +149,9 @@ func main() {
 		slog.Error("server forced to shutdown", "error", err)
 		os.Exit(1)
 	}
+
+	// Stop token checker
+	tokenChecker.Stop()
 
 	slog.Info("server exited gracefully")
 }
