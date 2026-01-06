@@ -62,6 +62,10 @@ func GetMineruErrorMessage(err error) string {
 		case MineruErrorNoPermission:
 			return "没有权限访问该解析任务"
 		default:
+			// Check if it's an auth error by message
+			if mineruErr.IsAuthError {
+				return "解析工具认证失败，请检查 Token 是否有效或已过期"
+			}
 			return mineruErr.Message
 		}
 	}
@@ -75,9 +79,18 @@ func parseMineruError(code interface{}, message string) *MineruAPIError {
 		Message: message,
 	}
 
-	// Check for auth errors
+	// Check for auth errors by code
 	switch code {
 	case MineruErrorTokenInvalid, MineruErrorTokenExpired:
+		err.IsAuthError = true
+	}
+
+	// Also check for auth errors by message content
+	msgLower := strings.ToLower(message)
+	if strings.Contains(msgLower, "authenticate") ||
+	   strings.Contains(msgLower, "token") ||
+	   strings.Contains(msgLower, "unauthorized") ||
+	   strings.Contains(msgLower, "forbidden") {
 		err.IsAuthError = true
 	}
 
@@ -203,6 +216,12 @@ func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
+
+	// Log response for debugging
+	slog.Info("MinerU create task response",
+		"status_code", resp.StatusCode,
+		"body", string(body),
+	)
 
 	var result MineruTaskResponse
 	if err := json.Unmarshal(body, &result); err != nil {

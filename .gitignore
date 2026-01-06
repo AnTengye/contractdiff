@@ -1,3 +1,6 @@
 backend/config.yaml
 *.exe
 *.out
+.claude
+.shared
+.agent

@@ -28,6 +28,12 @@ let rightContractId = null;
 let leftPdfUrl = null;
 let rightPdfUrl = null;
 
+// Cancellation tokens for active uploads
+let cancelTokens = {
+    left: null,
+    right: null
+};
+
 // ===== Event Listeners =====
 uploadLeft.addEventListener('click', () => fileLeft.click());
 uploadRight.addEventListener('click', () => fileRight.click());
@@ -77,6 +83,7 @@ async function handleFileUpload(file, side) {
     const progressContainer = document.getElementById(`progress-${side}`);
     const progressFill = document.getElementById(`progress-fill-${side}`);
     const progressText = document.getElementById(`progress-text-${side}`);
+    const cancelBtn = document.getElementById(`cancel-btn-${side}`);
     const filenameSpan = side === 'left' ? leftFilename : rightFilename;
 
     // Detect file type
@@ -87,6 +94,10 @@ async function handleFileUpload(file, side) {
         rightFileType = fileType;
     }
 
+    // Create cancellation token
+    const cancelToken = { cancelled: false };
+    cancelTokens[side] = cancelToken;
+
     // Reset state
     uploadCard.classList.remove('has-file');
     uploadCard.classList.add('processing');
@@ -95,11 +106,34 @@ async function handleFileUpload(file, side) {
     progressContainer.style.display = 'block';
     progressFill.style.width = '10%';
     progressText.textContent = '上传中...';
+    cancelBtn.style.display = 'inline-block'; // Show cancel button
+
+    // Setup cancel button handler
+    const handleCancel = () => {
+        cancelToken.cancelled = true;
+        uploadCard.classList.remove('processing');
+        progressFill.style.width = '0%';
+        progressText.textContent = '❌ 已取消';
+        info.textContent = `❌ 已取消: ${file.name}`;
+        cancelBtn.style.display = 'none';
+
+        // Clean up timeout
+        setTimeout(() => {
+            progressContainer.style.display = 'none';
+        }, 2000);
+    };
+
+    cancelBtn.onclick = handleCancel;
 
     try {
         // Upload file
         const formData = new FormData();
         formData.append('file', file);
+
+        // Check cancellation before upload
+        if (cancelToken.cancelled) {
+            return;
+        }
 
         const token = localStorage.getItem('auth_token');
         const uploadResponse = await fetch('/api/contracts/upload', {
@@ -109,6 +143,11 @@ async function handleFileUpload(file, side) {
             },
             body: formData
         });
+
+        // Check cancellation after upload
+        if (cancelToken.cancelled) {
+            return;
+        }
 
         if (!uploadResponse.ok) {
             const error = await uploadResponse.json();
@@ -137,8 +176,13 @@ async function handleFileUpload(file, side) {
         progressFill.style.width = '30%';
         progressText.textContent = 'MinerU 处理中...';
 
-        // Poll for completion
-        const jsonData = await pollForResult(contractId, progressFill, progressText);
+        // Poll for completion with cancellation token
+        const jsonData = await pollForResult(contractId, progressFill, progressText, cancelToken);
+
+        // Check cancellation after polling
+        if (cancelToken.cancelled) {
+            return;
+        }
 
         // Success
         if (side === 'left') {
@@ -151,6 +195,7 @@ async function handleFileUpload(file, side) {
         uploadCard.classList.add('has-file');
         progressFill.style.width = '100%';
         progressText.textContent = '✓ 处理完成';
+        cancelBtn.style.display = 'none'; // Hide cancel button on success
         filenameSpan.textContent = file.name;
 
         setTimeout(() => {
@@ -162,8 +207,14 @@ async function handleFileUpload(file, side) {
         updateCompareButton();
 
     } catch (error) {
+        // Don't show error if cancelled by user
+        if (cancelToken.cancelled) {
+            return;
+        }
+
         uploadCard.classList.remove('processing');
         progressFill.style.width = '0%';
+        cancelBtn.style.display = 'none'; // Hide cancel button on error
 
         // Show detailed error message with contract ID if available
         const contractId = side === 'left' ? leftContractId : rightContractId;
@@ -179,14 +230,24 @@ async function handleFileUpload(file, side) {
     }
 }
 
-async function pollForResult(contractId, progressFill, progressText) {
+async function pollForResult(contractId, progressFill, progressText, cancelToken) {
     const token = localStorage.getItem('auth_token');
     const maxAttempts = 120; // 10 minutes with 5 second intervals
     let attempt = 0;
 
     while (attempt < maxAttempts) {
+        // Check for cancellation at the start of each iteration
+        if (cancelToken && cancelToken.cancelled) {
+            throw new Error('用户已取消');
+        }
+
         await new Promise(resolve => setTimeout(resolve, 5000));
         attempt++;
+
+        // Check for cancellation after sleep
+        if (cancelToken && cancelToken.cancelled) {
+            throw new Error('用户已取消');
+        }
 
         // Update progress (30% to 90%)
         const progress = 30 + Math.min(60, attempt * 2);
@@ -212,15 +273,26 @@ async function pollForResult(contractId, progressFill, progressText) {
                 console.log('json_data field:', contract.json_data);
                 return contract.json_data;
             } else if (status.status === 'failed') {
+                // Task failed - stop polling and show error
                 throw new Error(status.error_msg || '处理失败');
             } else {
                 console.log('Current status:', status.status);
             }
         } catch (error) {
-            if (error.message.includes('处理失败')) {
+            // If error message indicates failure (not a network error), stop polling
+            if (error.message && (
+                error.message.includes('处理失败') ||
+                error.message.includes('认证失败') ||
+                error.message.includes('Token') ||
+                error.message.includes('token') ||
+                error.message.includes('过期') ||
+                error.message.includes('错误') ||
+                error.message.includes('配额')
+            )) {
                 throw error;
             }
-            // Continue polling on network errors
+            // Continue polling on network errors or unexpected errors
+            console.warn('Polling error (will retry):', error.message);
         }
     }
 

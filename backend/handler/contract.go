@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -148,6 +149,17 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 // processMineruTask handles the MinerU extraction task asynchronously
 func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL string) {
+	// Add panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in processMineruTask",
+				"contract_id", contract.ID,
+				"panic", r,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, fmt.Sprintf("Internal error: %v", r))
+		}
+	}()
+
 	slog.Info("starting MinerU task",
 		"contract_id", contract.ID,
 		"pdf_url", pdfURL,
