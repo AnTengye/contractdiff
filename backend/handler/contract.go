@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,21 +16,29 @@ import (
 	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/AnTengye/contractdiff/backend/model"
 	"github.com/AnTengye/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/service/converter"
+	"github.com/AnTengye/contractdiff/backend/service/parser"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type ContractHandler struct {
-	minioService  *service.MinioService
-	mineruService *service.MineruService
-	store         *service.ContractStore
+	minioService   *service.MinioService
+	parserRegistry *parser.Registry
+	converter      *converter.GotenbergConverter
+	store          *service.ContractStore
 }
 
-func NewContractHandler(minioSvc *service.MinioService, mineruSvc *service.MineruService) *ContractHandler {
+func NewContractHandler(
+	minioSvc *service.MinioService,
+	parserRegistry *parser.Registry,
+	converter *converter.GotenbergConverter,
+) *ContractHandler {
 	return &ContractHandler{
-		minioService:  minioSvc,
-		mineruService: mineruSvc,
-		store:         service.GetContractStore(),
+		minioService:   minioSvc,
+		parserRegistry: parserRegistry,
+		converter:      converter,
+		store:          service.GetContractStore(),
 	}
 }
 
@@ -34,6 +46,12 @@ func NewContractHandler(minioSvc *service.MinioService, mineruSvc *service.Miner
 func (h *ContractHandler) Upload(c *gin.Context) {
 	tenant := middleware.GetTenant(c)
 	requestID := middleware.GetRequestID(c)
+
+	// Get parser type from form (optional, defaults to "mineru")
+	parserTypeStr := c.PostForm("parser_type")
+	if parserTypeStr == "" {
+		parserTypeStr = "mineru" // Default
+	}
 
 	// Get file from form
 	file, header, err := c.Request.FormFile("file")
@@ -48,6 +66,37 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	if ext != ".pdf" && ext != ".docx" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Only PDF and DOCX files are allowed"})
 		return
+	}
+
+	originalFormat := strings.TrimPrefix(ext, ".")
+
+	// Get selected parser from registry
+	selectedParser, err := h.parserRegistry.Get(parser.ParserType(parserTypeStr))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Parser %s not available: %v", parserTypeStr, err),
+		})
+		return
+	}
+
+	// Check format compatibility
+	if !selectedParser.CanParse(originalFormat) {
+		// If DOCX and parser doesn't support it, check if we have converter
+		if originalFormat == "docx" && h.converter == nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Parser %s does not support DOCX format and converter is not available", parserTypeStr),
+			})
+			return
+		} else if originalFormat != "docx" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Parser %s does not support %s format", parserTypeStr, originalFormat),
+			})
+			return
+		}
+		slog.Info("parser does not support DOCX, will convert to PDF",
+			"parser_type", parserTypeStr,
+			"request_id", requestID,
+		)
 	}
 
 	// Determine content type based on extension
@@ -82,6 +131,77 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		contentType = expectedContentType
 	}
 
+	// Calculate file hash for deduplication
+	// Read file content into memory to calculate hash
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file"})
+		return
+	}
+
+	// Calculate SHA256 hash
+	hash := sha256.Sum256(fileBytes)
+	fileHash := hex.EncodeToString(hash[:])
+	fileSize := int64(len(fileBytes))
+
+	slog.Debug("file hash calculated",
+		"request_id", requestID,
+		"file_hash", fileHash,
+		"file_size", fileSize)
+
+	// Check for duplicate files in the same tenant
+	existingContract := h.store.FindByHash(tenant, fileHash)
+	if existingContract != nil {
+		// File already exists - return existing result instead of reprocessing
+		slog.Info("duplicate file detected, returning existing contract",
+			"request_id", requestID,
+			"tenant", tenant,
+			"existing_contract_id", existingContract.ID,
+			"file_hash", fileHash,
+			"filename", header.Filename)
+
+		// Increment duplicate count
+		h.store.IncrementDuplicateCount(existingContract.ID)
+
+		// Create a new contract record that references the original
+		contractID := uuid.New().String()
+		duplicateContract := &model.Contract{
+			ID:             contractID,
+			Filename:       header.Filename,
+			Tenant:         tenant,
+			OriginalFormat: originalFormat,
+			FileURL:        existingContract.FileURL,
+			ConvertedFileURL: existingContract.ConvertedFileURL,
+			FileHash:       fileHash,
+			FileSize:       fileSize,
+			ParserType:     existingContract.ParserType,
+			Status:         existingContract.Status,
+			IsDuplicate:    true,
+			OriginalID:     existingContract.ID,
+			JSONData:       existingContract.JSONData,
+			RawJSONData:    existingContract.RawJSONData,
+			Metadata:       existingContract.Metadata,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+
+		h.store.Save(duplicateContract)
+
+		c.JSON(http.StatusOK, gin.H{
+			"id":           duplicateContract.ID,
+			"filename":     duplicateContract.Filename,
+			"status":       duplicateContract.Status,
+			"is_duplicate": true,
+			"original_id":  existingContract.ID,
+			"message":      "File already processed, returning cached result",
+		})
+		return
+	}
+
+	// File is unique - proceed with upload
+	// Create a reader from the bytes we already read
+	fileReader := bytes.NewReader(fileBytes)
+
 	// Generate unique ID and object name
 	contractID := uuid.New().String()
 	objectName := tenant + "/" + contractID + "/" + header.Filename
@@ -91,11 +211,13 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		"tenant", tenant,
 		"contract_id", contractID,
 		"filename", header.Filename,
-		"size", header.Size,
+		"size", fileSize,
+		"parser_type", parserTypeStr,
+		"file_hash", fileHash,
 	)
 
-	// Upload to MINIO
-	err = h.minioService.UploadFile(c.Request.Context(), objectName, file, header.Size, contentType)
+	// Upload to MINIO using the bytes we already read
+	err = h.minioService.UploadFile(c.Request.Context(), objectName, fileReader, fileSize, contentType)
 	if err != nil {
 		slog.Error("failed to upload file to MINIO",
 			"request_id", requestID,
@@ -106,8 +228,8 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// Get presigned URL for MinerU
-	pdfURL, err := h.minioService.GetPresignedURL(c.Request.Context(), objectName)
+	// Get presigned URL for parser
+	fileURL, err := h.minioService.GetPresignedURL(c.Request.Context(), objectName)
 	if err != nil {
 		slog.Error("failed to generate presigned URL",
 			"request_id", requestID,
@@ -118,15 +240,21 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// Create contract record
+	// Create contract record with new fields
 	contract := &model.Contract{
-		ID:        contractID,
-		Filename:  header.Filename,
-		Tenant:    tenant,
-		PDFURL:    pdfURL,
-		Status:    model.StatusPending,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:             contractID,
+		Filename:       header.Filename,
+		Tenant:         tenant,
+		OriginalFormat: originalFormat,
+		FileURL:        fileURL,
+		PDFURL:         fileURL, // Backward compatibility
+		FileHash:       fileHash,
+		FileSize:       fileSize,
+		ParserType:     parserTypeStr,
+		Status:         model.StatusPending,
+		Metadata:       &model.ContractMetadata{},
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 	h.store.Save(contract)
 
@@ -134,25 +262,27 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		"request_id", requestID,
 		"contract_id", contractID,
 		"tenant", tenant,
+		"parser_type", parserTypeStr,
 	)
 
-	// Call MinerU API
-	go h.processMineruTask(contract, pdfURL)
+	// Process document asynchronously
+	go h.processDocument(contract, selectedParser)
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":       contractID,
-		"filename": header.Filename,
-		"pdf_url":  pdfURL,
-		"status":   model.StatusPending,
+		"id":          contractID,
+		"filename":    header.Filename,
+		"file_url":    fileURL,
+		"status":      model.StatusPending,
+		"parser_type": parserTypeStr,
 	})
 }
 
-// processMineruTask handles the MinerU extraction task asynchronously
-func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL string) {
+// processDocument handles document parsing asynchronously with DOCX conversion support
+func (h *ContractHandler) processDocument(contract *model.Contract, selectedParser parser.DocumentParser) {
 	// Add panic recovery
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("panic in processMineruTask",
+			slog.Error("panic in processDocument",
 				"contract_id", contract.ID,
 				"panic", r,
 			)
@@ -160,66 +290,116 @@ func (h *ContractHandler) processMineruTask(contract *model.Contract, pdfURL str
 		}
 	}()
 
-	slog.Info("starting MinerU task",
+	ctx := context.Background()
+	startTime := time.Now()
+
+	slog.Info("starting document processing",
 		"contract_id", contract.ID,
-		"pdf_url", pdfURL,
+		"parser_type", contract.ParserType,
+		"original_format", contract.OriginalFormat,
 	)
 
-	// Update status to processing
-	h.store.UpdateStatus(contract.ID, model.StatusProcessing, "")
-
-	// Create task
-	resp, err := h.mineruService.CreateTask(pdfURL, contract.ID)
-	if err != nil {
-		slog.Error("failed to create MinerU task",
+	// Step 1: DOCX to PDF conversion (if needed)
+	fileURLForParser := contract.FileURL
+	if contract.OriginalFormat == "docx" && !selectedParser.CanParse("docx") {
+		slog.Info("converting DOCX to PDF",
 			"contract_id", contract.ID,
-			"error", err,
-			"is_auth_error", service.IsMineruAuthError(err),
+			"parser_type", contract.ParserType,
 		)
-		// Use user-friendly error message
-		errorMsg := service.GetMineruErrorMessage(err)
-		h.store.UpdateStatus(contract.ID, model.StatusFailed, errorMsg)
+		h.store.UpdateStatus(contract.ID, model.StatusConverting, "")
+
+		conversionStart := time.Now()
+		pdfContent, err := h.converter.ConvertDOCXFromURL(ctx, contract.FileURL)
+		if err != nil {
+			slog.Error("DOCX conversion failed",
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, "DOCX conversion failed: "+err.Error())
+			return
+		}
+		conversionDuration := time.Since(conversionStart)
+
+		// Upload converted PDF to MinIO
+		pdfObjectName := contract.Tenant + "/" + contract.ID + "/converted.pdf"
+		err = h.minioService.UploadFile(ctx, pdfObjectName,
+			io.NopCloser(bytes.NewReader(pdfContent)), int64(len(pdfContent)), "application/pdf")
+		if err != nil {
+			slog.Error("failed to save converted PDF",
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to save converted PDF: "+err.Error())
+			return
+		}
+
+		// Get presigned URL for converted PDF
+		pdfURL, err := h.minioService.GetPresignedURL(ctx, pdfObjectName)
+		if err != nil {
+			slog.Error("failed to generate PDF URL",
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to generate PDF URL: "+err.Error())
+			return
+		}
+
+		fileURLForParser = pdfURL
+		contract.ConvertedFileURL = pdfURL
+		contract.Metadata.ConvertedFromDOCX = true
+		contract.Metadata.ConversionDuration = conversionDuration.Milliseconds()
+		h.store.Save(contract)
+
+		slog.Info("DOCX conversion completed",
+			"contract_id", contract.ID,
+			"duration_ms", conversionDuration.Milliseconds(),
+		)
+	}
+
+	// Step 2: Create parsing task
+	h.store.UpdateStatus(contract.ID, model.StatusProcessing, "")
+	taskID, err := selectedParser.CreateTask(ctx, fileURLForParser, contract.ID)
+	if err != nil {
+		slog.Error("failed to create parser task",
+			"contract_id", contract.ID,
+			"parser_type", contract.ParserType,
+			"error", err,
+		)
+		h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to start parsing: "+err.Error())
 		return
 	}
 
-	slog.Info("MinerU task created",
+	slog.Info("parser task created",
 		"contract_id", contract.ID,
-		"task_id", resp.Data.TaskID,
+		"parser_type", contract.ParserType,
+		"task_id", taskID,
 	)
 
-	// Update task ID
-	contract.MineruTaskID = resp.Data.TaskID
+	contract.TaskID = taskID
+	contract.MineruTaskID = taskID // Backward compatibility
 	h.store.Save(contract)
 
-	// Poll for result (if no callback configured)
-	h.pollTaskResult(contract)
+	// Step 3: Poll for result
+	h.pollParserTask(contract, selectedParser, startTime)
 }
 
-// pollTaskResult polls for task completion
-func (h *ContractHandler) pollTaskResult(contract *model.Contract) {
+// pollParserTask polls for task completion (generic for all parsers)
+func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParser parser.DocumentParser, startTime time.Time) {
+	ctx := context.Background()
+	maxAttempts := 60 // 5 minutes with 5 second intervals
+	interval := 5 * time.Second
+
 	slog.Info("starting task polling",
 		"contract_id", contract.ID,
-		"task_id", contract.MineruTaskID,
+		"task_id", contract.TaskID,
+		"parser_type", contract.ParserType,
 	)
 
-	maxAttempts := 60 // 5 minutes with 5 second intervals
 	for i := 0; i < maxAttempts; i++ {
-		time.Sleep(5 * time.Second)
+		time.Sleep(interval)
 
-		status, err := h.mineruService.GetTaskStatus(contract.MineruTaskID)
+		status, err := selectedParser.GetTaskStatus(ctx, contract.TaskID)
 		if err != nil {
-			// Check if this is an auth error (token expired/invalid) - fail fast
-			if service.IsMineruAuthError(err) {
-				slog.Error("MinerU authentication error - stopping poll",
-					"contract_id", contract.ID,
-					"error", err,
-				)
-				errorMsg := service.GetMineruErrorMessage(err)
-				h.store.UpdateStatus(contract.ID, model.StatusFailed, errorMsg)
-				return
-			}
-
-			// For other errors, log and continue polling
 			slog.Warn("poll attempt failed",
 				"contract_id", contract.ID,
 				"attempt", i+1,
@@ -231,57 +411,67 @@ func (h *ContractHandler) pollTaskResult(contract *model.Contract) {
 		slog.Debug("poll status",
 			"contract_id", contract.ID,
 			"attempt", i+1,
-			"state", status.Data.State,
-			"zip_url", status.Data.FullZipURL,
+			"state", status.State,
 		)
 
-		switch status.Data.State {
-		case "done":
-			// Fetch JSON from ZIP
-			if status.Data.FullZipURL != "" {
-				slog.Info("downloading and extracting ZIP",
-					"contract_id", contract.ID,
-					"zip_url", status.Data.FullZipURL,
-				)
-				jsonData, err := h.mineruService.FetchZipAndExtractJSON(status.Data.FullZipURL)
-				if err != nil {
-					slog.Error("failed to fetch/extract JSON",
-						"contract_id", contract.ID,
-						"error", err,
-					)
-					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch JSON: "+err.Error())
-					return
-				}
-				slog.Info("JSON extracted successfully",
-					"contract_id", contract.ID,
-					"keys", getMapKeys(jsonData),
-				)
-				h.store.UpdateJSONData(contract.ID, jsonData)
-			} else {
-				slog.Info("task completed without ZIP URL",
-					"contract_id", contract.ID,
-				)
-				h.store.UpdateStatus(contract.ID, model.StatusCompleted, "")
-			}
-			return
-		case "failed":
-			slog.Error("MinerU task failed",
+		switch status.State {
+		case "done", "completed", "success":
+			slog.Info("task completed, fetching result",
 				"contract_id", contract.ID,
-				"error_msg", status.Data.ErrorMsg,
+				"result_url", status.ResultURL,
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, status.Data.ErrorMsg)
-			return
-		case "running":
-			if status.Data.ExtractProgress.TotalPages > 0 {
-				slog.Debug("extraction progress",
+
+			// Fetch raw result
+			rawData, err := selectedParser.FetchResult(ctx, contract.TaskID, status.ResultURL)
+			if err != nil {
+				slog.Error("failed to fetch result",
 					"contract_id", contract.ID,
-					"extracted_pages", status.Data.ExtractProgress.ExtractedPages,
-					"total_pages", status.Data.ExtractProgress.TotalPages,
+					"error", err,
 				)
+				h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
+				return
 			}
+
+			// Normalize result to unified format
+			normalizedData, err := selectedParser.NormalizeResult(rawData)
+			if err != nil {
+				slog.Error("failed to normalize result",
+					"contract_id", contract.ID,
+					"error", err,
+				)
+				h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to normalize result: "+err.Error())
+				return
+			}
+
+			// Calculate processing duration
+			processingDuration := time.Since(startTime)
+			contract.Metadata.ProcessingDuration = processingDuration.Milliseconds()
+
+			// Update contract with results
+			contract.JSONData = normalizedData
+			contract.RawJSONData = rawData
+			contract.Status = model.StatusCompleted
+			contract.UpdatedAt = time.Now()
+			h.store.Save(contract)
+
+			slog.Info("document processing completed",
+				"contract_id", contract.ID,
+				"total_duration_ms", processingDuration.Milliseconds(),
+				"parser_type", contract.ParserType,
+			)
+			return
+
+		case "failed", "error":
+			slog.Error("parser task failed",
+				"contract_id", contract.ID,
+				"error_msg", status.ErrorMessage,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, status.ErrorMessage)
+			return
 		}
 	}
 
+	// Timeout
 	slog.Error("task polling timeout",
 		"contract_id", contract.ID,
 	)

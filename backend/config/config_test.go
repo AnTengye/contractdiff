@@ -116,8 +116,9 @@ minio:
 	if cfg.Auth.TokenExpireHours != 24 {
 		t.Errorf("Expected default token_expire_hours 24, got %d", cfg.Auth.TokenExpireHours)
 	}
-	if cfg.Mineru.ModelVersion != "vlm" {
-		t.Errorf("Expected default model_version vlm, got %s", cfg.Mineru.ModelVersion)
+	// Check MinerU defaults (backward compatibility)
+	if cfg.Parsers.MinerU != nil && cfg.Parsers.MinerU.ModelVersion != "vlm" {
+		t.Errorf("Expected default model_version vlm, got %s", cfg.Parsers.MinerU.ModelVersion)
 	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Expected default log level info, got %s", cfg.Log.Level)

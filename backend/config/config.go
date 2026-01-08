@@ -9,10 +9,12 @@ import (
 type Config struct {
 	Server       ServerConfig       `yaml:"server"`
 	Minio        MinioConfig        `yaml:"minio"`
-	Mineru       MineruConfig       `yaml:"mineru"`
+	Parsers      ParsersConfig      `yaml:"parsers"`      // NEW: Multi-parser config
+	Mineru       MineruConfig       `yaml:"mineru"`       // Keep for backward compatibility
+	Gotenberg    GotenbergConfig    `yaml:"gotenberg"`    // NEW: DOCX to PDF conversion
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
-	Store        StoreConfig        `yaml:"store"`
+	Store        StoreConfig        `yaml:\"store"`
 	Notification NotificationConfig `yaml:"notification"`
 	Users        []User             `yaml:"users"`
 }
@@ -36,6 +38,7 @@ type MinioConfig struct {
 }
 
 type MineruConfig struct {
+	Enabled        bool   `yaml:"enabled"`          // NEW: Enable/disable this parser
 	APIURL         string `yaml:"api_url"`
 	APIToken       string `yaml:"api_token"`
 	ModelVersion   string `yaml:"model_version"`
@@ -43,6 +46,50 @@ type MineruConfig struct {
 	Seed           string `yaml:"seed"`
 	TokenCreatedAt string `yaml:"token_created_at"` // RFC3339 format, when token was created/refreshed
 	TokenValidDays int    `yaml:"token_valid_days"` // Token validity period in days, default 14
+}
+
+// ParsersConfig contains configuration for all parsers
+type ParsersConfig struct {
+	Default   string            `yaml:"default"`    // Default parser to use
+	MinerU    *MineruConfig     `yaml:"mineru"`
+	PaddleOCR *PaddleOCRConfig  `yaml:"paddleocr"`
+	GOTOCR    *GOTOCRConfig     `yaml:"got_ocr"`
+	RAGFlow   *RAGFlowConfig    `yaml:"ragflow"`
+}
+
+// PaddleOCRConfig for PaddleOCR parser
+type PaddleOCRConfig struct {
+	Enabled                    bool   `yaml:"enabled"`
+	APIURL                     string `yaml:"api_url"`
+	APIToken                   string `yaml:"api_token"`
+	UseDocOrientationClassify  bool   `yaml:"use_doc_orientation_classify"`  // Optional: document orientation detection
+	UseDocUnwarping            bool   `yaml:"use_doc_unwarping"`            // Optional: document unwarping
+	UseChartRecognition        bool   `yaml:"use_chart_recognition"`        // Optional: chart recognition
+}
+
+// GOTOCRConfig for GOT-OCR parser
+type GOTOCRConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	APIURL      string `yaml:"api_url"`
+	APIToken    string `yaml:"api_token"`
+	ModelType   string `yaml:"model_type"`   // "base", "large"
+	CallbackURL string `yaml:"callback_url"`
+}
+
+// RAGFlowConfig for RAGFlow parser
+type RAGFlowConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	APIURL      string `yaml:"api_url"`
+	APIToken    string `yaml:"api_token"`
+	ChunkMethod string `yaml:"chunk_method"` // "naive", "qa", "table"
+	CallbackURL string `yaml:"callback_url"`
+}
+
+// GotenbergConfig for DOCX to PDF conversion
+type GotenbergConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	APIURL  string `yaml:"api_url"` // e.g., "http://gotenberg:3000"
+	Timeout int    `yaml:"timeout"` // Conversion timeout in seconds
 }
 
 type AuthConfig struct {
@@ -102,17 +149,36 @@ func Load(path string) (*Config, error) {
 	if cfg.Auth.TokenExpireHours == 0 {
 		cfg.Auth.TokenExpireHours = 24
 	}
-	if cfg.Mineru.ModelVersion == "" {
-		cfg.Mineru.ModelVersion = "vlm"
+
+	// Backward compatibility: if old Mineru config exists but new Parsers.MinerU doesn't
+	if cfg.Parsers.MinerU == nil && cfg.Mineru.APIURL != "" {
+		cfg.Mineru.Enabled = true
+		cfg.Parsers.MinerU = &cfg.Mineru
 	}
+
+	// Parser defaults
+	if cfg.Parsers.Default == "" {
+		cfg.Parsers.Default = "mineru"
+	}
+	if cfg.Parsers.MinerU != nil {
+		if cfg.Parsers.MinerU.ModelVersion == "" {
+			cfg.Parsers.MinerU.ModelVersion = "vlm"
+		}
+		if cfg.Parsers.MinerU.TokenValidDays == 0 {
+			cfg.Parsers.MinerU.TokenValidDays = 14
+		}
+	}
+
+	// Gotenberg defaults
+	if cfg.Gotenberg.Timeout == 0 {
+		cfg.Gotenberg.Timeout = 60
+	}
+
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}
 	if cfg.Log.Format == "" {
 		cfg.Log.Format = "text"
-	}
-	if cfg.Mineru.TokenValidDays == 0 {
-		cfg.Mineru.TokenValidDays = 14
 	}
 	if cfg.Notification.CheckIntervalHours == 0 {
 		cfg.Notification.CheckIntervalHours = 12

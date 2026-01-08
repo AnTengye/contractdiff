@@ -1,6 +1,6 @@
 server:
   port: 8080
-  
+
 minio:
   endpoint: "xxx.temp.com"
   access_key: "xxx"
@@ -8,29 +8,79 @@ minio:
   bucket: "pdfdiff"
   use_ssl: true
   expire_days: 7
-  
+
+# Multi-parser configuration
+parsers:
+  default: "mineru"  # Default parser to use when not specified
+
+  mineru:
+    enabled: true
+    api_url: "https://mineru.net/api/v4"
+    api_token: "xxx"
+    model_version: "vlm"
+    callback_url: ""
+    seed: "contractdiff-seed"
+    token_created_at: "2026-01-01T00:00:00+08:00"  # RFC3339 format
+    token_valid_days: 14
+
+  paddleocr:
+    enabled: false
+    api_url: "https://your-paddleocr-api.com/layout-parsing"
+    api_token: "xxx"
+    use_doc_orientation_classify: false  # Optional: document orientation detection
+    use_doc_unwarping: false             # Optional: document unwarping
+    use_chart_recognition: false         # Optional: chart recognition
+
+  got_ocr:
+    enabled: false
+    api_url: "http://got-ocr-server:8000"
+    api_token: "xxx"
+    model_type: "large"  # "base" or "large"
+    callback_url: ""
+
+  ragflow:
+    enabled: false
+    api_url: "http://ragflow-server:9380"
+    api_token: "xxx"
+    chunk_method: "qa"  # "naive", "qa", or "table"
+    callback_url: ""
+
+# DOCX to PDF conversion service
+gotenberg:
+  enabled: false
+  api_url: "http://gotenberg:3000"
+  timeout: 60  # Conversion timeout in seconds
+
+# Backward compatibility - old mineru config (will be migrated to parsers.mineru)
 mineru:
   api_url: "https://mineru.net/api/v4"
   api_token: "xxx"
   model_version: "vlm"
   callback_url: ""
   seed: "contractdiff-seed"
-  token_created_at: "2026-01-01T00:00:00+08:00"  # RFC3339 format, when token was created/refreshed
-  token_valid_days: 14                            # Token validity period in days
+  token_created_at: "2026-01-01T00:00:00+08:00"
+  token_valid_days: 14
 
 notification:
-  check_interval_hours: 12  # How often to check token expiration (default: every 12 hours)
+  check_interval_hours: 12
   dingtalk:
-    webhook_url: ""         # DingTalk robot webhook URL
-    secret: ""              # Optional: for signed webhooks
+    webhook_url: ""
+    secret: ""
   feishu:
-    webhook_url: ""         # Feishu robot webhook URL
-    secret: ""              # Optional: for signed webhooks
-  
+    webhook_url: ""
+    secret: ""
+
+log:
+  level: "info"   # debug, info, warn, error
+  format: "text"  # json, text
+
+store:
+  max_contracts: 1000  # Maximum contracts to keep in memory, 0 = unlimited
+
 auth:
   jwt_secret: "mytestdiff"
   token_expire_hours: 24
-  
+
 users:
   - username: "admin"
     password: "admin123"
@@ -38,3 +88,4 @@ users:
   - username: "user1"
     password: "user123"
     tenant: "tenant1"
+

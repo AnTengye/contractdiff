@@ -426,7 +426,7 @@ func TestContractHandlerListEmpty(t *testing.T) {
 }
 
 func TestNewContractHandler(t *testing.T) {
-	handler := NewContractHandler(nil, nil)
+	handler := NewContractHandler(nil, nil, nil)
 	if handler == nil {
 		t.Fatal("Expected non-nil handler")
 	}

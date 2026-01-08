@@ -14,6 +14,7 @@ import (
 // In production, this should be replaced with a database
 type ContractStore struct {
 	contracts    map[string]*model.Contract
+	hashIndex    map[string]string // hash -> contract ID mapping for deduplication
 	mu           sync.RWMutex
 	maxContracts int // Maximum contracts to keep, 0 = unlimited
 }
@@ -32,6 +33,7 @@ func InitContractStore(cfg *config.StoreConfig) {
 		}
 		globalStore = &ContractStore{
 			contracts:    make(map[string]*model.Contract),
+			hashIndex:    make(map[string]string),
 			maxContracts: maxContracts,
 		}
 		slog.Info("contract store initialized", "max_contracts", maxContracts)
@@ -44,6 +46,7 @@ func GetContractStore() *ContractStore {
 		// Fallback initialization with default settings
 		globalStore = &ContractStore{
 			contracts:    make(map[string]*model.Contract),
+			hashIndex:    make(map[string]string),
 			maxContracts: 100, // Default: keep 100 contracts
 		}
 	}
@@ -56,6 +59,13 @@ func (s *ContractStore) Save(contract *model.Contract) {
 
 	contract.UpdatedAt = time.Now()
 	s.contracts[contract.ID] = contract
+
+	// Update hash index if file hash is available
+	if contract.FileHash != "" {
+		// Create a composite key: tenant + hash (for multi-tenant isolation)
+		hashKey := contract.Tenant + ":" + contract.FileHash
+		s.hashIndex[hashKey] = contract.ID
+	}
 
 	// Cleanup if exceeds max
 	s.cleanupIfNeeded()
@@ -83,6 +93,13 @@ func (s *ContractStore) GetByTenant(tenant string) []*model.Contract {
 func (s *ContractStore) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Remove from hash index if exists
+	if contract, ok := s.contracts[id]; ok && contract.FileHash != "" {
+		hashKey := contract.Tenant + ":" + contract.FileHash
+		delete(s.hashIndex, hashKey)
+	}
+
 	delete(s.contracts, id)
 }
 
@@ -142,4 +159,28 @@ func (s *ContractStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.contracts)
+}
+
+// FindByHash finds an existing contract by file hash within the same tenant
+// Returns nil if not found
+func (s *ContractStore) FindByHash(tenant, fileHash string) *model.Contract {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	hashKey := tenant + ":" + fileHash
+	if contractID, ok := s.hashIndex[hashKey]; ok {
+		return s.contracts[contractID]
+	}
+	return nil
+}
+
+// IncrementDuplicateCount increments the duplicate count for a contract
+func (s *ContractStore) IncrementDuplicateCount(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if contract, ok := s.contracts[id]; ok {
+		contract.DuplicateCount++
+		contract.UpdatedAt = time.Now()
+	}
 }

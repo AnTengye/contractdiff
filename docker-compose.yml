@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   contractdiff:
     image: as2674as/contractdiff:latest

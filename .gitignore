@@ -4,3 +4,5 @@ backend/config.yaml
 .claude
 .shared
 .agent
+test
+.idea

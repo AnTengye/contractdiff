@@ -17,6 +17,8 @@ import (
 	"github.com/AnTengye/contractdiff/backend/pkg/logger"
 	"github.com/AnTengye/contractdiff/backend/pkg/notify"
 	"github.com/AnTengye/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/service/converter"
+	"github.com/AnTengye/contractdiff/backend/service/parser"
 	"github.com/gin-gonic/gin"
 )
 
@@ -51,6 +53,65 @@ func main() {
 
 	mineruSvc := service.NewMineruService(&cfg.Mineru)
 
+	// Initialize parser registry
+	parserRegistry := parser.GetRegistry()
+
+	// Register MinerU parser (if enabled)
+	if cfg.Parsers.MinerU != nil && cfg.Parsers.MinerU.Enabled {
+		mineruParser, err := parser.NewMineruParser(cfg.Parsers.MinerU)
+		if err != nil {
+			slog.Warn("failed to initialize MinerU parser", "error", err)
+		} else {
+			if err := parserRegistry.Register(mineruParser); err != nil {
+				slog.Error("failed to register MinerU parser", "error", err)
+			} else {
+				slog.Info("MinerU parser registered")
+			}
+		}
+	} else if cfg.Mineru.APIURL != "" {
+		// Backward compatibility: use old Mineru config if Parsers.MinerU not configured
+		cfg.Mineru.Enabled = true
+		mineruParser, err := parser.NewMineruParser(&cfg.Mineru)
+		if err != nil {
+			slog.Warn("failed to initialize MinerU parser (legacy config)", "error", err)
+		} else {
+			if err := parserRegistry.Register(mineruParser); err != nil {
+				slog.Error("failed to register MinerU parser", "error", err)
+			} else {
+				slog.Info("MinerU parser registered (from legacy config)")
+			}
+		}
+	}
+
+	// Register PaddleOCR parser (if enabled)
+	if cfg.Parsers.PaddleOCR != nil && cfg.Parsers.PaddleOCR.Enabled {
+		paddleParser, err := parser.NewPaddleOCRParser(cfg.Parsers.PaddleOCR)
+		if err != nil {
+			slog.Warn("failed to initialize PaddleOCR parser", "error", err)
+		} else {
+			if err := parserRegistry.Register(paddleParser); err != nil {
+				slog.Error("failed to register PaddleOCR parser", "error", err)
+			} else {
+				slog.Info("PaddleOCR parser registered")
+			}
+		}
+	}
+
+	// TODO: Register GOT-OCR and RAGFlow parsers when implemented
+
+	slog.Info("parser registry initialized", "registered_parsers", parserRegistry.Count())
+
+	// Initialize Gotenberg converter (if enabled)
+	var gotenbergConv *converter.GotenbergConverter
+	if cfg.Gotenberg.Enabled {
+		gotenbergConv, err = converter.NewGotenbergConverter(&cfg.Gotenberg)
+		if err != nil {
+			slog.Warn("Gotenberg converter not available", "error", err)
+		} else {
+			slog.Info("Gotenberg converter initialized", "url", cfg.Gotenberg.APIURL)
+		}
+	}
+
 	// Initialize contract store with config
 	service.InitContractStore(&cfg.Store)
 
@@ -61,8 +122,9 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(cfg)
-	contractHandler := handler.NewContractHandler(minioSvc, mineruSvc)
+	contractHandler := handler.NewContractHandler(minioSvc, parserRegistry, gotenbergConv)
 	callbackHandler := handler.NewCallbackHandler(mineruSvc)
+	parserHandler := handler.NewParserHandler(parserRegistry)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -77,9 +139,9 @@ func main() {
 	router.Use(middleware.RateLimit(100, time.Minute)) // Rate limiting: 100 requests per minute
 
 	// Determine static files directory
-	staticDir := "./"
-	if _, err := os.Stat("./index.html"); os.IsNotExist(err) {
-		staticDir = "../"
+	staticDir := "./frontend/"
+	if _, err := os.Stat(staticDir + "index.html"); os.IsNotExist(err) {
+		staticDir = "../frontend/"
 	}
 	slog.Info("serving static files", "directory", staticDir)
 
@@ -104,6 +166,9 @@ func main() {
 	{
 		api.POST("/auth/login", authHandler.Login)
 		api.POST("/mineru/callback", callbackHandler.HandleCallback)
+		// NEW: Parser discovery endpoints
+		api.GET("/parsers", parserHandler.ListParsers)
+		api.GET("/parsers/format", parserHandler.GetParsersForFormat)
 	}
 
 	// Protected routes
