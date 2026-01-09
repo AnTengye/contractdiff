@@ -2,10 +2,10 @@
 import { UploadCard, DiffPane, PdfViewer, StatsPanel, setupZoomControls } from '@/components';
 import { runComparison } from '@/features/comparison';
 import { setupSyncScroll } from '@/features/sync';
-import { contractStore, selectCanCompare } from '@/store';
+import { contractStore, selectCanCompare, uiStore } from '@/store';
 import { getCurrentUser, getParsers } from '@/services/api';
 import { isAuthenticated, redirectToLogin, clearAuth, getUser } from '@/utils/auth';
-import { getRequiredElement, getElementById } from '@/utils/dom';
+import { getRequiredElement, getElementById, toggle } from '@/utils/dom';
 
 // Check authentication on load
 async function checkAuth(): Promise<boolean> {
@@ -83,6 +83,15 @@ async function init(): Promise<void> {
   contractStore.subscribeToSelector(selectCanCompare, (canCompare) => {
     compareBtn.classList.toggle('disabled', !canCompare);
     (compareBtn as HTMLButtonElement).disabled = !canCompare;
+  });
+
+  // Subscribe to UI store for section visibility
+  const pdfSection = getElementById('pdf-section');
+  const diffSection = getElementById('diff-section');
+
+  uiStore.subscribe((state) => {
+    if (pdfSection) toggle(pdfSection, state.showPdfSection);
+    if (diffSection) toggle(diffSection, state.showDiffSection);
   });
 
   // Setup synchronized scrolling for diff panes

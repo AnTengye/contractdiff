@@ -1,155 +1,176 @@
 // Annotation preparation for PDF/DOCX highlighting
-import { contractStore, pdfActions, diffStore } from '@/store';
-import { normalizeText } from '@/services/parser';
-import { BLOCK_MATCH_THRESHOLD, COLORS } from '@/constants';
-import type { Annotations, Annotation, BlockWithBbox } from '@/types';
+import { pdfActions, diffStore, diffActions } from '@/store';
+import { COLORS } from '@/constants';
+import type { Annotations, Annotation, AnnotationType, AnnotationResult, UnmappedDiff, BlockReference } from '@/types';
+import type { DiffTuple } from '@/types';
 
 /**
- * Extract blocks with bounding boxes from contract data
+ * Classify diff type based on operations in a paragraph
  */
-export function extractBlocksWithBbox(side: 'left' | 'right'): BlockWithBbox[] {
-  const state = contractStore.getState();
-  const data = state[side].data;
-  if (!data?.pdf_info) return [];
+function classifyDiffType(diffs: DiffTuple[]): AnnotationType {
+  let hasAdd = false;
+  let hasRemove = false;
 
-  const blocks: BlockWithBbox[] = [];
-
-  for (const page of data.pdf_info) {
-    const pageIdx = page.page_idx;
-    const pageSize = page.page_size || [612, 792];
-
-    for (const block of page.para_blocks || []) {
-      if (!block.bbox) continue;
-
-      let text = '';
-      for (const line of block.lines || []) {
-        for (const span of line.spans || []) {
-          if (span.content) {
-            text += span.content;
-          }
-        }
-      }
-
-      if (text.trim()) {
-        blocks.push({
-          text: text.trim(),
-          bbox: block.bbox,
-          pageIdx,
-          pageSize: pageSize as [number, number],
-        });
-      }
+  for (const [op, text] of diffs) {
+    if (text.trim()) {
+      if (op === 1) hasAdd = true;
+      if (op === -1) hasRemove = true;
     }
   }
 
-  return blocks;
+  if (hasAdd && hasRemove) return 'modified';
+  if (hasAdd) return 'added';
+  return 'removed';
 }
 
 /**
- * Build block map for matching
+ * Add annotation to the collection
  */
-function buildBlockMap(blocks: BlockWithBbox[]): Map<string, BlockWithBbox[]> {
-  const map = new Map<string, BlockWithBbox[]>();
-
-  for (const block of blocks) {
-    const normalized = normalizeText(block.text);
-    if (!map.has(normalized)) {
-      map.set(normalized, []);
-    }
-    map.get(normalized)!.push(block);
+function addAnnotation(
+  annotations: Annotations,
+  block: BlockReference,
+  type: AnnotationType,
+  text: string,
+  pairId: string,
+  paragraphIdx: number
+): void {
+  const pageIdx = block.pageIdx;
+  if (!annotations[pageIdx]) {
+    annotations[pageIdx] = [];
   }
-
-  return map;
+  annotations[pageIdx]!.push({
+    bbox: block.bbox,
+    pageSize: block.pageSize,
+    type,
+    text,
+    pairId,
+    paragraphIdx,
+  });
 }
 
 /**
- * Find matching block for diff text
+ * Prepare annotations from diff results using paragraph-block linking
+ * This ensures visual annotations match the text diff counts exactly
  */
-function findMatchingBlock(
-  blockMap: Map<string, BlockWithBbox[]>,
-  searchText: string
-): BlockWithBbox | null {
-  const normalized = normalizeText(searchText);
-  if (normalized.length < 3) return null;
-
-  // Exact match
-  if (blockMap.has(normalized)) {
-    return blockMap.get(normalized)![0] || null;
-  }
-
-  // Substring match
-  for (const [text, blocks] of blockMap.entries()) {
-    if (text.includes(normalized) || normalized.includes(text)) {
-      const ratio = Math.min(text.length, normalized.length) / Math.max(text.length, normalized.length);
-      if (ratio >= BLOCK_MATCH_THRESHOLD) {
-        return blocks[0] || null;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Prepare annotations from diff results
- */
-export function prepareAnnotations(): void {
+export function prepareAnnotations(): AnnotationResult {
   const diffs = diffStore.getState().paragraphDiffs;
-  if (!diffs) return;
 
-  const leftBlocks = extractBlocksWithBbox('left');
-  const rightBlocks = extractBlocksWithBbox('right');
+  const emptyResult: AnnotationResult = {
+    leftAnnotations: {},
+    rightAnnotations: {},
+    mappedCount: 0,
+    unmappedCount: 0,
+    unmappedDiffs: [],
+  };
 
-  const leftBlockMap = buildBlockMap(leftBlocks);
-  const rightBlockMap = buildBlockMap(rightBlocks);
+  if (!diffs) {
+    pdfActions.setAnnotations({}, {});
+    return emptyResult;
+  }
 
   const leftAnnotations: Annotations = {};
   const rightAnnotations: Annotations = {};
+  const unmappedDiffs: UnmappedDiff[] = [];
 
+  let mappedCount = 0;
+  let unmappedCount = 0;
   let pairId = 0;
 
-  for (const diff of diffs) {
+  // Track which blocks have been annotated to avoid duplicates
+  const annotatedLeftBlocks = new Set<string>();
+  const annotatedRightBlocks = new Set<string>();
+
+  for (let paragraphIdx = 0; paragraphIdx < diffs.length; paragraphIdx++) {
+    const diff = diffs[paragraphIdx]!;
     if (!diff.hasDiff) continue;
 
-    for (const [op, text] of diff.diffs) {
-      if (op === 0 || !text.trim()) continue;
+    // Determine the type of change for this paragraph
+    const changeType = classifyDiffType(diff.diffs);
+    const currentPairId = `pair-${pairId++}`;
 
-      const currentPairId = `pair-${pairId++}`;
+    // For removed or modified content, annotate left side blocks
+    if (changeType === 'removed' || changeType === 'modified') {
+      const leftPara = diff.left;
+      if (leftPara.sourceBlocks && leftPara.sourceBlocks.length > 0) {
+        for (const block of leftPara.sourceBlocks) {
+          // Create unique key for this block
+          const blockKey = `${block.pageIdx}-${block.blockIdx}`;
+          if (!annotatedLeftBlocks.has(blockKey)) {
+            annotatedLeftBlocks.add(blockKey);
+            addAnnotation(
+              leftAnnotations,
+              block,
+              changeType === 'modified' ? 'modified' : 'removed',
+              leftPara.text.substring(0, 100),
+              currentPairId,
+              paragraphIdx
+            );
+            mappedCount++;
+          }
+        }
+      } else {
+        // No block reference - track as unmapped
+        unmappedDiffs.push({
+          type: 'removed',
+          text: leftPara.text.substring(0, 50) + (leftPara.text.length > 50 ? '...' : ''),
+          paragraphIdx,
+          reason: 'No source block reference',
+        });
+        unmappedCount++;
+      }
+    }
 
-      if (op === -1) {
-        // Deletion - find in left
-        const block = findMatchingBlock(leftBlockMap, text);
-        if (block) {
-          if (!leftAnnotations[block.pageIdx]) {
-            leftAnnotations[block.pageIdx] = [];
+    // For added or modified content, annotate right side blocks
+    if (changeType === 'added' || changeType === 'modified') {
+      const rightPara = diff.right;
+      if (rightPara.sourceBlocks && rightPara.sourceBlocks.length > 0) {
+        for (const block of rightPara.sourceBlocks) {
+          // Create unique key for this block
+          const blockKey = `${block.pageIdx}-${block.blockIdx}`;
+          if (!annotatedRightBlocks.has(blockKey)) {
+            annotatedRightBlocks.add(blockKey);
+            addAnnotation(
+              rightAnnotations,
+              block,
+              changeType === 'modified' ? 'modified' : 'added',
+              rightPara.text.substring(0, 100),
+              currentPairId,
+              paragraphIdx
+            );
+            mappedCount++;
           }
-          leftAnnotations[block.pageIdx]!.push({
-            bbox: block.bbox,
-            pageSize: block.pageSize,
-            type: 'removed',
-            text: text,
-            pairId: currentPairId,
-          });
         }
-      } else if (op === 1) {
-        // Addition - find in right
-        const block = findMatchingBlock(rightBlockMap, text);
-        if (block) {
-          if (!rightAnnotations[block.pageIdx]) {
-            rightAnnotations[block.pageIdx] = [];
-          }
-          rightAnnotations[block.pageIdx]!.push({
-            bbox: block.bbox,
-            pageSize: block.pageSize,
-            type: 'added',
-            text: text,
-            pairId: currentPairId,
-          });
-        }
+      } else {
+        unmappedDiffs.push({
+          type: 'added',
+          text: rightPara.text.substring(0, 50) + (rightPara.text.length > 50 ? '...' : ''),
+          paragraphIdx,
+          reason: 'No source block reference',
+        });
+        unmappedCount++;
       }
     }
   }
 
+  // Update store with annotations
   pdfActions.setAnnotations(leftAnnotations, rightAnnotations);
+
+  // Update visual stats in diff store
+  diffActions.updateVisualStats(mappedCount, unmappedCount);
+
+  // Log results for debugging
+  if (unmappedCount > 0) {
+    console.warn(`${unmappedCount} diffs could not be mapped to visual locations:`, unmappedDiffs);
+  }
+  console.log(`Visual annotations: ${mappedCount} mapped, ${unmappedCount} unmapped`);
+
+  return {
+    leftAnnotations,
+    rightAnnotations,
+    mappedCount,
+    unmappedCount,
+    unmappedDiffs,
+  };
 }
 
 /**
@@ -179,13 +200,31 @@ export function drawAnnotationsOnOverlay(
     rect.setAttribute('width', String(width));
     rect.setAttribute('height', String(height));
 
-    const colors = annotation.type === 'added' ? COLORS.ADDED : COLORS.REMOVED;
+    // Select colors based on annotation type
+    let colors;
+    switch (annotation.type) {
+      case 'added':
+        colors = COLORS.ADDED;
+        break;
+      case 'removed':
+        colors = COLORS.REMOVED;
+        break;
+      case 'modified':
+        colors = COLORS.MODIFIED;
+        break;
+      default:
+        colors = COLORS.REMOVED;
+    }
+
     rect.setAttribute('fill', colors.FILL);
     rect.setAttribute('stroke', colors.STROKE);
     rect.setAttribute('stroke-width', '1');
 
     if (annotation.pairId) {
       rect.dataset.pairId = annotation.pairId;
+    }
+    if (annotation.paragraphIdx !== undefined) {
+      rect.dataset.paragraphIdx = String(annotation.paragraphIdx);
     }
 
     overlay.appendChild(rect);

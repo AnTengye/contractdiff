@@ -95,6 +95,12 @@ func (p *MineruParser) FetchResult(ctx context.Context, taskID string, resultURL
 	return p.service.FetchZipAndExtractJSON(resultURL)
 }
 
+// FetchResultWithPDF downloads and extracts both JSON and PDF from MinerU ZIP
+// Returns the raw JSON data and PDF bytes (if available)
+func (p *MineruParser) FetchResultWithPDF(ctx context.Context, resultURL string) (*service.ZipExtractResult, error) {
+	return p.service.FetchZipAndExtractFiles(resultURL)
+}
+
 // NormalizeResult converts MinerU output to standard format
 // MinerU output is already well-structured, we just ensure consistent field names
 func (p *MineruParser) NormalizeResult(rawData map[string]interface{}) (map[string]interface{}, error) {

@@ -10,7 +10,7 @@ interface DiffState {
 
 const initialState: DiffState = {
   paragraphDiffs: null,
-  stats: { added: 0, removed: 0, total: 0 },
+  stats: { added: 0, removed: 0, modified: 0, total: 0 },
   isComparing: false,
 };
 
@@ -24,23 +24,49 @@ export const selectIsComparing = (state: DiffState) => state.isComparing;
 // Actions
 export const diffActions = {
   setDiffs(diffs: ParagraphDiff[]) {
-    // Calculate stats
+    // Calculate stats - count paragraphs by change type
     let added = 0;
     let removed = 0;
+    let modified = 0;
 
     for (const d of diffs) {
       if (d.hasDiff && d.diffs) {
-        for (const [op] of d.diffs) {
-          if (op === 1) added++;
-          if (op === -1) removed++;
+        let hasAdd = false;
+        let hasRemove = false;
+
+        for (const [op, text] of d.diffs) {
+          // Only count non-empty text changes
+          if (text.trim()) {
+            if (op === 1) hasAdd = true;
+            if (op === -1) hasRemove = true;
+          }
+        }
+
+        // Classify the paragraph change type
+        if (hasAdd && hasRemove) {
+          modified++;
+        } else if (hasAdd) {
+          added++;
+        } else if (hasRemove) {
+          removed++;
         }
       }
     }
 
     diffStore.setState({
       paragraphDiffs: diffs,
-      stats: { added, removed, total: added + removed },
+      stats: { added, removed, modified, total: added + removed + modified },
       isComparing: false,
+    });
+  },
+
+  updateVisualStats(mapped: number, unmapped: number) {
+    const currentStats = diffStore.getState().stats;
+    diffStore.setState({
+      stats: {
+        ...currentStats,
+        visualStats: { mapped, unmapped },
+      },
     });
   },
 

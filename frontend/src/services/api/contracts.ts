@@ -5,7 +5,12 @@ import type { ContractData, CancelToken } from '@/types';
 
 interface UploadResponse {
   id: string;
-  pdf_url: string;
+  pdf_url?: string;
+  filename?: string;
+  status?: 'pending' | 'processing' | 'completed' | 'failed';
+  is_duplicate?: boolean;
+  original_id?: string;
+  message?: string;
 }
 
 interface ContractStatusResponse {
@@ -16,8 +21,10 @@ interface ContractStatusResponse {
 interface ContractDetailResponse {
   id: string;
   status: string;
-  data: ContractData | null;
+  json_data: ContractData | null;
   pdf_url: string;
+  file_url?: string;
+  converted_file_url?: string;
   created_at: string;
 }
 
@@ -77,6 +84,10 @@ export async function getContractStatus(
     },
   });
 
+  if (response.status === 429) {
+    throw new Error('RateLimit');
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Failed to get status' }));
     throw new Error(error.error || 'Failed to get status');
@@ -119,6 +130,8 @@ export async function pollForResult(
   onProgress?: (progress: number, message: string) => void
 ): Promise<PollResult> {
   let attempts = 0;
+  let currentInterval: number = POLLING.INTERVAL_MS;
+  let rateLimitBackoff = 0;
 
   while (attempts < POLLING.MAX_ATTEMPTS) {
     // Check for cancellation
@@ -133,18 +146,34 @@ export async function pollForResult(
     try {
       const status = await getContractStatus(contractId);
 
+      // Reset backoff on successful request
+      rateLimitBackoff = 0;
+      currentInterval = POLLING.INTERVAL_MS;
+
       if (status.status === 'completed') {
         onProgress?.(95, '获取处理结果...');
-        const detail = await getContractDetail(contractId);
 
-        if (!detail.data) {
-          throw new Error('No data in completed contract');
+        // Retry fetching detail a few times - sometimes data isn't ready immediately
+        let detailRetries = 3;
+        while (detailRetries > 0) {
+          const detail = await getContractDetail(contractId);
+
+          if (detail.json_data) {
+            // Use PDF proxy endpoint to bypass CORS issues
+            return {
+              data: detail.json_data,
+              pdfUrl: `/api/contracts/${contractId}/pdf`,
+            };
+          }
+
+          detailRetries--;
+          if (detailRetries > 0) {
+            console.warn('Contract completed but data not ready, retrying...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
 
-        return {
-          data: detail.data,
-          pdfUrl: detail.pdf_url,
-        };
+        throw new Error('Contract completed but data not available');
       }
 
       if (status.status === 'failed') {
@@ -152,13 +181,26 @@ export async function pollForResult(
       }
 
       // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, POLLING.INTERVAL_MS));
+      await new Promise(resolve => setTimeout(resolve, currentInterval));
     } catch (error) {
       if (error instanceof Error && error.message === 'Cancelled') {
         throw error;
       }
-      // Continue polling on transient errors
+
+      // Handle rate limiting with exponential backoff
+      if (error instanceof Error && error.message === 'RateLimit') {
+        rateLimitBackoff++;
+        const backoffMs = Math.min(30000, POLLING.INTERVAL_MS * Math.pow(2, rateLimitBackoff));
+        console.warn(`Rate limited, backing off for ${backoffMs}ms`);
+        onProgress?.(progress, `请求过于频繁，等待 ${Math.round(backoffMs / 1000)}s...`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        currentInterval = backoffMs;
+        continue;
+      }
+
+      // Continue polling on other transient errors
       console.warn('Poll error, retrying:', error);
+      await new Promise(resolve => setTimeout(resolve, currentInterval));
     }
   }
 

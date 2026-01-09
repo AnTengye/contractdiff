@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -90,4 +91,20 @@ func (s *MinioService) GetPublicURL(objectName string) string {
 		protocol = "https"
 	}
 	return fmt.Sprintf("%s://%s/%s/%s", protocol, s.config.Endpoint, s.bucket, objectName)
+}
+
+// UploadBytes uploads byte data to MinIO and returns the presigned URL
+func (s *MinioService) UploadBytes(ctx context.Context, objectName string, data []byte, contentType string) (string, error) {
+	reader := bytes.NewReader(data)
+	size := int64(len(data))
+
+	_, err := s.client.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload bytes: %w", err)
+	}
+
+	// Return presigned URL
+	return s.GetPresignedURL(ctx, objectName)
 }

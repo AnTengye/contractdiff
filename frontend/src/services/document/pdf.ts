@@ -14,8 +14,33 @@ export type { PDFDocumentProxy, PDFPageProxy };
 
 /**
  * Load PDF document from URL
+ * For API endpoints (starting with /api/), fetches with auth token first
  */
 export async function loadPdfDocument(url: string): Promise<PDFDocumentProxy> {
+  // Check if this is an API URL that needs authentication
+  if (url.startsWith('/api/')) {
+    const { getToken } = await import('@/utils/auth');
+    const token = getToken();
+
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PDF: ${response.status}`);
+    }
+
+    const data = await response.arrayBuffer();
+    return loadPdfFromData(data);
+  }
+
+  // External URLs - let PDF.js handle directly
   const loadingTask = pdfjsLib.getDocument(url);
   return loadingTask.promise;
 }

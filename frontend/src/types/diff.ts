@@ -19,8 +19,15 @@ export interface MatchedPair {
   matchType?: 'number' | 'similarity';
 }
 
+export interface VisualStats {
+  mapped: number;
+  unmapped: number;
+}
+
 export interface DiffStats {
   added: number;
   removed: number;
+  modified: number;
   total: number;
+  visualStats?: VisualStats;
 }

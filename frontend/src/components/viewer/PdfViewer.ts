@@ -37,10 +37,20 @@ export class PdfViewer {
       const sideState = state[this.side];
       const prevSideState = prevState[this.side];
 
+      console.log(`[PdfViewer ${this.side}] pdfUrl changed:`, prevSideState.pdfUrl, '->', sideState.pdfUrl);
+
       if (sideState.pdfUrl !== prevSideState.pdfUrl && sideState.pdfUrl) {
+        console.log(`[PdfViewer ${this.side}] Loading PDF:`, sideState.pdfUrl);
         this.loadPdf(sideState.pdfUrl);
       }
     });
+
+    // Check if pdfUrl is already set (in case data was loaded before component initialized)
+    const currentState = contractStore.getState()[this.side];
+    if (currentState.pdfUrl) {
+      console.log(`[PdfViewer ${this.side}] Initial pdfUrl found:`, currentState.pdfUrl);
+      this.loadPdf(currentState.pdfUrl);
+    }
 
     // Subscribe to PDF store for zoom and annotation changes
     this.unsubscribe = pdfStore.subscribe((state, prevState) => {

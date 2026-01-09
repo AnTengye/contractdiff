@@ -88,9 +88,9 @@ func parseMineruError(code interface{}, message string) *MineruAPIError {
 	// Also check for auth errors by message content
 	msgLower := strings.ToLower(message)
 	if strings.Contains(msgLower, "authenticate") ||
-	   strings.Contains(msgLower, "token") ||
-	   strings.Contains(msgLower, "unauthorized") ||
-	   strings.Contains(msgLower, "forbidden") {
+		strings.Contains(msgLower, "token") ||
+		strings.Contains(msgLower, "unauthorized") ||
+		strings.Contains(msgLower, "forbidden") {
 		err.IsAuthError = true
 	}
 
@@ -387,4 +387,149 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	}
 
 	return nil, fmt.Errorf("no valid JSON file found in ZIP")
+}
+
+// ZipExtractResult holds both JSON and PDF extracted from MinerU ZIP
+type ZipExtractResult struct {
+	JSONData map[string]interface{}
+	PDFData  []byte
+	PDFName  string
+}
+
+// FetchZipAndExtractFiles downloads the ZIP file and extracts both JSON and PDF content
+func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResult, error) {
+	slog.Debug("downloading ZIP for full extraction", "url", zipURL)
+
+	resp, err := s.httpClient.Get(zipURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download ZIP: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the entire ZIP into memory
+	zipData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ZIP: %w", err)
+	}
+
+	slog.Debug("ZIP downloaded", "size_bytes", len(zipData))
+
+	// Open the ZIP archive
+	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open ZIP: %w", err)
+	}
+
+	result := &ZipExtractResult{}
+
+	// Target files to look for
+	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
+	pdfFiles := []string{"layout.pdf", "spans.pdf", "origin.pdf"}
+
+	for _, file := range zipReader.File {
+		slog.Debug("ZIP file entry", "name", file.Name)
+
+		// Try to extract JSON
+		if result.JSONData == nil {
+			for _, targetFile := range jsonFiles {
+				if strings.HasSuffix(file.Name, targetFile) {
+					rc, err := file.Open()
+					if err != nil {
+						continue
+					}
+					content, err := io.ReadAll(rc)
+					rc.Close()
+					if err != nil {
+						continue
+					}
+					if err := json.Unmarshal(content, &result.JSONData); err != nil {
+						slog.Debug("failed to parse JSON file", "file", file.Name, "error", err)
+						continue
+					}
+					slog.Info("extracted JSON", "file", file.Name)
+					break
+				}
+			}
+		}
+
+		// Try to extract PDF
+		if result.PDFData == nil {
+			for _, targetFile := range pdfFiles {
+				if strings.HasSuffix(file.Name, targetFile) {
+					rc, err := file.Open()
+					if err != nil {
+						continue
+					}
+					content, err := io.ReadAll(rc)
+					rc.Close()
+					if err != nil {
+						continue
+					}
+					// Verify it's a PDF (starts with %PDF)
+					if len(content) > 4 && string(content[:4]) == "%PDF" {
+						result.PDFData = content
+						result.PDFName = targetFile
+						slog.Info("extracted PDF", "file", file.Name, "size", len(content))
+						break
+					}
+				}
+			}
+		}
+
+		// If both found, we can stop
+		if result.JSONData != nil && result.PDFData != nil {
+			break
+		}
+	}
+
+	// Fallback: try any .json file
+	if result.JSONData == nil {
+		for _, file := range zipReader.File {
+			if strings.HasSuffix(file.Name, ".json") {
+				rc, err := file.Open()
+				if err != nil {
+					continue
+				}
+				content, err := io.ReadAll(rc)
+				rc.Close()
+				if err != nil {
+					continue
+				}
+				if err := json.Unmarshal(content, &result.JSONData); err != nil {
+					continue
+				}
+				slog.Info("extracted fallback JSON", "file", file.Name)
+				break
+			}
+		}
+	}
+
+	// Fallback: try any .pdf file
+	if result.PDFData == nil {
+		for _, file := range zipReader.File {
+			if strings.HasSuffix(file.Name, ".pdf") {
+				rc, err := file.Open()
+				if err != nil {
+					continue
+				}
+				content, err := io.ReadAll(rc)
+				rc.Close()
+				if err != nil {
+					continue
+				}
+				if len(content) > 4 && string(content[:4]) == "%PDF" {
+					result.PDFData = content
+					result.PDFName = file.Name
+					slog.Info("extracted fallback PDF", "file", file.Name, "size", len(content))
+					break
+				}
+			}
+		}
+	}
+
+	if result.JSONData == nil {
+		return nil, fmt.Errorf("no valid JSON file found in ZIP")
+	}
+
+	return result, nil
 }

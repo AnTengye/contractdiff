@@ -35,16 +35,39 @@ export async function handleFileUpload(file: File, side: 'left' | 'right'): Prom
       throw new Error('Cancelled');
     }
 
-    contractActions.setUploadProgress(side, 30, 'MinerU 处理中...');
+    let result;
 
-    // Poll for result
-    const result = await pollForResult(
-      uploadResult.id,
-      cancelToken,
-      (progress, message) => {
-        contractActions.setUploadProgress(side, progress, message);
+    // Check if this is a cached/duplicate upload - skip polling
+    if (uploadResult.is_duplicate && uploadResult.status === 'completed') {
+      contractActions.setUploadProgress(side, 90, '使用缓存结果...');
+
+      // Fetch the contract details directly since it's already processed
+      const { getContractDetail } = await import('@/services/api');
+      const detail = await getContractDetail(uploadResult.id);
+
+      if (!detail.json_data) {
+        throw new Error('Cached contract has no data');
       }
-    );
+
+      // Use PDF proxy endpoint to bypass CORS issues with MinIO
+      const { API_ENDPOINTS } = await import('@/constants');
+      result = {
+        data: detail.json_data,
+        pdfUrl: API_ENDPOINTS.CONTRACTS_PDF(uploadResult.id),
+      };
+    } else {
+      // Normal flow - poll for result
+      contractActions.setUploadProgress(side, 30, 'MinerU 处理中...');
+
+      // Poll for result
+      result = await pollForResult(
+        uploadResult.id,
+        cancelToken,
+        (progress, message) => {
+          contractActions.setUploadProgress(side, progress, message);
+        }
+      );
+    }
 
     // Check cancellation
     if (cancelToken.cancelled) {

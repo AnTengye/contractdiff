@@ -32,6 +32,7 @@ export const API_ENDPOINTS = {
   CONTRACTS_LIST: '/api/contracts',
   CONTRACTS_DETAIL: (id: string) => `/api/contracts/${id}`,
   CONTRACTS_STATUS: (id: string) => `/api/contracts/${id}/status`,
+  CONTRACTS_PDF: (id: string) => `/api/contracts/${id}/pdf`,
   PARSERS: '/api/parsers',
 } as const;
 
@@ -45,5 +46,10 @@ export const COLORS = {
     FILL: 'rgba(248, 113, 113, 0.2)',
     STROKE: '#f87171',
     BG: 'rgba(239, 68, 68, 0.25)',
+  },
+  MODIFIED: {
+    FILL: 'rgba(251, 191, 36, 0.2)',
+    STROKE: '#fbbf24',
+    BG: 'rgba(251, 191, 36, 0.25)',
   },
 } as const;

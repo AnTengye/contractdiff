@@ -1,5 +1,5 @@
 // JSON parsing functions for contract data
-import type { ContractData, Paragraph, Block, PageInfo } from '@/types';
+import type { ContractData, Paragraph, Block, PageInfo, BlockReference } from '@/types';
 
 /**
  * Check if text ends with a complete sentence (ends with period, question mark, etc.)
@@ -53,7 +53,7 @@ export function shouldMergeParagraphs(
 }
 
 /**
- * Merge paragraphs that should be connected
+ * Merge paragraphs that should be connected (preserving block references)
  */
 export function mergeCrossPageParagraphs(paragraphs: Paragraph[]): Paragraph[] {
   if (paragraphs.length <= 1) return paragraphs;
@@ -63,13 +63,20 @@ export function mergeCrossPageParagraphs(paragraphs: Paragraph[]): Paragraph[] {
 
   while (i < paragraphs.length) {
     const current = { ...paragraphs[i]! };
+    // Copy sourceBlocks array to avoid mutation
+    current.sourceBlocks = current.sourceBlocks ? [...current.sourceBlocks] : [];
 
     // Check if we should merge with subsequent paragraphs
     while (
       i + 1 < paragraphs.length &&
       shouldMergeParagraphs(current, paragraphs[i + 1]!)
     ) {
-      current.text = current.text + paragraphs[i + 1]!.text;
+      const next = paragraphs[i + 1]!;
+      current.text = current.text + next.text;
+      // Merge block references from the next paragraph
+      if (next.sourceBlocks) {
+        current.sourceBlocks.push(...next.sourceBlocks);
+      }
       i++;
     }
 
@@ -103,27 +110,70 @@ function extractBlockText(block: Block): string {
 
 /**
  * Parse contract JSON and extract paragraphs
+ * Handles both raw MinerU format (pdf_info) and normalized format (paragraphs array)
  */
 export function parseContractJSON(json: ContractData): Paragraph[] {
+  // First try normalized format (paragraphs array directly in json_data)
+  if (json.paragraphs && Array.isArray(json.paragraphs)) {
+    const paragraphs: Paragraph[] = [];
+
+    for (const para of json.paragraphs as Block[]) {
+      const blockText = extractBlockText(para);
+      if (blockText) {
+        const blockRef: BlockReference = {
+          blockIdx: para.index || 0,
+          pageIdx: (para.page || 1) - 1, // Convert 1-indexed to 0-indexed
+          bbox: para.bbox || [0, 0, 0, 0],
+          pageSize: [612, 792], // Default page size
+          text: blockText.trim(),
+        };
+
+        paragraphs.push({
+          text: blockText.trim(),
+          type: para.type,
+          pageIdx: (para.page || 1) - 1,
+          sourceBlocks: [blockRef],
+        });
+      }
+    }
+
+    console.log(`Parsed ${paragraphs.length} paragraphs from normalized format`);
+    return mergeCrossPageParagraphs(paragraphs);
+  }
+
+  // Fall back to raw MinerU format (pdf_info)
   const pages: PageInfo[] = json.pdf_info || [];
   const paragraphs: Paragraph[] = [];
 
   for (const page of pages) {
     const pageIdx = page.page_idx;
+    const pageSize = page.page_size || [612, 792];
     const blocks = page.para_blocks || [];
 
-    for (const block of blocks) {
-      let blockText = extractBlockText(block);
+    for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+      const block = blocks[blockIdx]!;
+      const blockText = extractBlockText(block);
+
+      // Create block reference for visual annotation
+      const blockRef: BlockReference = {
+        blockIdx,
+        pageIdx,
+        bbox: block.bbox || [0, 0, 0, 0],
+        pageSize: pageSize as [number, number],
+        text: blockText.trim(),
+      };
 
       // Handle nested blocks (like lists)
       if (block.blocks) {
         for (const subBlock of block.blocks) {
           const subText = extractBlockText(subBlock);
           if (subText) {
+            // For nested blocks, use parent block's bbox as reference
             paragraphs.push({
               text: subText.trim(),
               type: subBlock.type || block.type,
               pageIdx: pageIdx,
+              sourceBlocks: [blockRef],
             });
           }
         }
@@ -132,6 +182,7 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
           text: blockText.trim(),
           type: block.type,
           pageIdx: pageIdx,
+          sourceBlocks: [blockRef],
         });
       }
     }

@@ -166,23 +166,23 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		// Create a new contract record that references the original
 		contractID := uuid.New().String()
 		duplicateContract := &model.Contract{
-			ID:             contractID,
-			Filename:       header.Filename,
-			Tenant:         tenant,
-			OriginalFormat: originalFormat,
-			FileURL:        existingContract.FileURL,
+			ID:               contractID,
+			Filename:         header.Filename,
+			Tenant:           tenant,
+			OriginalFormat:   originalFormat,
+			FileURL:          existingContract.FileURL,
 			ConvertedFileURL: existingContract.ConvertedFileURL,
-			FileHash:       fileHash,
-			FileSize:       fileSize,
-			ParserType:     existingContract.ParserType,
-			Status:         existingContract.Status,
-			IsDuplicate:    true,
-			OriginalID:     existingContract.ID,
-			JSONData:       existingContract.JSONData,
-			RawJSONData:    existingContract.RawJSONData,
-			Metadata:       existingContract.Metadata,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
+			FileHash:         fileHash,
+			FileSize:         fileSize,
+			ParserType:       existingContract.ParserType,
+			Status:           existingContract.Status,
+			IsDuplicate:      true,
+			OriginalID:       existingContract.ID,
+			JSONData:         existingContract.JSONData,
+			RawJSONData:      existingContract.RawJSONData,
+			Metadata:         existingContract.Metadata,
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
 		}
 
 		h.store.Save(duplicateContract)
@@ -421,15 +421,53 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 				"result_url", status.ResultURL,
 			)
 
-			// Fetch raw result
-			rawData, err := selectedParser.FetchResult(ctx, contract.TaskID, status.ResultURL)
-			if err != nil {
-				slog.Error("failed to fetch result",
-					"contract_id", contract.ID,
-					"error", err,
-				)
-				h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
-				return
+			var rawData map[string]interface{}
+			var pdfData []byte
+
+			// For MinerU parser, use the enhanced method that extracts both JSON and PDF
+			if mineruParser, ok := selectedParser.(*parser.MineruParser); ok {
+				result, err := mineruParser.FetchResultWithPDF(ctx, status.ResultURL)
+				if err != nil {
+					slog.Error("failed to fetch result with PDF",
+						"contract_id", contract.ID,
+						"error", err,
+					)
+					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
+					return
+				}
+				rawData = result.JSONData
+				pdfData = result.PDFData
+
+				// If PDF was extracted and no ConvertedFileURL exists, upload it to MinIO
+				if len(pdfData) > 0 && contract.ConvertedFileURL == "" {
+					pdfObjectName := fmt.Sprintf("%s/%s/layout.pdf", contract.Tenant, contract.ID)
+					pdfURL, err := h.minioService.UploadBytes(ctx, pdfObjectName, pdfData, "application/pdf")
+					if err != nil {
+						slog.Warn("failed to upload extracted PDF, continuing without it",
+							"contract_id", contract.ID,
+							"error", err,
+						)
+					} else {
+						contract.ConvertedFileURL = pdfURL
+						slog.Info("uploaded extracted PDF from MinerU",
+							"contract_id", contract.ID,
+							"pdf_url", pdfURL,
+							"pdf_size", len(pdfData),
+						)
+					}
+				}
+			} else {
+				// For other parsers, use the standard method
+				var err error
+				rawData, err = selectedParser.FetchResult(ctx, contract.TaskID, status.ResultURL)
+				if err != nil {
+					slog.Error("failed to fetch result",
+						"contract_id", contract.ID,
+						"error", err,
+					)
+					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
+					return
+				}
 			}
 
 			// Normalize result to unified format
@@ -458,6 +496,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 				"contract_id", contract.ID,
 				"total_duration_ms", processingDuration.Milliseconds(),
 				"parser_type", contract.ParserType,
+				"has_pdf", contract.ConvertedFileURL != "",
 			)
 			return
 
@@ -560,4 +599,52 @@ func (h *ContractHandler) Delete(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Contract deleted"})
+}
+
+// GetPDF proxies the PDF file to bypass CORS issues
+func (h *ContractHandler) GetPDF(c *gin.Context) {
+	tenant := middleware.GetTenant(c)
+	id := c.Param("id")
+
+	contract := h.store.Get(id)
+	if contract == nil || contract.Tenant != tenant {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Contract not found"})
+		return
+	}
+
+	// Get the PDF URL (prioritize converted file for DOCX)
+	pdfURL := contract.GetPDFURL()
+	if pdfURL == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "PDF not available"})
+		return
+	}
+
+	// Fetch PDF from MinIO
+	resp, err := http.Get(pdfURL)
+	if err != nil {
+		slog.Error("failed to fetch PDF",
+			"contract_id", id,
+			"error", err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF from storage"})
+		return
+	}
+
+	// Stream PDF to client
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s.pdf\"", contract.ID))
+
+	_, err = io.Copy(c.Writer, resp.Body)
+	if err != nil {
+		slog.Error("failed to stream PDF",
+			"contract_id", id,
+			"error", err,
+		)
+	}
 }
