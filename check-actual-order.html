@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>检查实际排序结果</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; font-size: 12px; }
+        .critical { background: #ffcccc; padding: 15px; margin: 20px 0; border: 2px solid red; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .error { background-color: #ffcccc; }
+        .warning { background-color: #fff3cd; }
+        button { padding: 10px 20px; font-size: 14px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🔍 检查实际段落排序</h1>
+    
+    <div class="critical">
+        <h2>⚠️ 排序代码已运行，但问题仍存在</h2>
+        <p>控制台显示三个排序日志都执行了，但显示顺序仍然不对。</p>
+        <p><strong>可能原因：后端数据的 page 字段本身就是错的！</strong></p>
+    </div>
+
+    <button onclick="checkBackendPageValues()">1. 检查后端 page 字段</button>
+    <button onclick="checkBlocksPageIdx()">2. 检查 blocks 的 pageIdx</button>
+    <button onclick="checkDiffsOrder()">3. 检查 diffs 最终顺序</button>
+    <button onclick="findProblemParagraph()">4. 查找问题段落</button>
+    
+    <div id="result"></div>
+
+    <script>
+        function checkBackendPageValues() {
+            const resultDiv = document.getElementById('result');
+            const rightData = window.contractStore?.getState()?.right?.data;
+            
+            if (!rightData || !rightData.paragraphs) {
+                resultDiv.innerHTML = '<p class="error">无法获取数据</p>';
+                return;
+            }
+
+            let html = '<h2>后端 paragraphs 数组的 page 字段：</h2>';
+            html += '<table>';
+            html += '<tr><th>数组索引</th><th>page</th><th>index</th><th>文本预览</th><th>问题</th></tr>';
+            
+            const paras = rightData.paragraphs;
+            let lastPage = -1;
+            let issues = [];
+            
+            paras.forEach((para, idx) => {
+                const page = para.page || 0;
+                const index = para.index !== undefined ? para.index : 'N/A';
+                const text = para.lines?.[0]?.spans?.[0]?.content?.substring(0, 40) || '(空)';
+                
+                let issue = '';
+                let rowClass = '';
+                
+                if (page < lastPage) {
+                    issue = `⚠️ page 递减！从 ${lastPage} → ${page}`;
+                    rowClass = 'error';
+                    issues.push({ idx, page, lastPage, text });
+                }
+                
+                // 特别标注包含"面政治舆情"的段落
+                if (text.includes('面政治舆情')) {
+                    issue += ' ⭐ 这是问题段落！';
+                    rowClass = 'warning';
+                }
+                
+                html += `<tr class="${rowClass}">`;
+                html += `<td>${idx}</td>`;
+                html += `<td>${page}</td>`;
+                html += `<td>${index}</td>`;
+                html += `<td>${text}</td>`;
+                html += `<td>${issue}</td>`;
+                html += '</tr>';
+                
+                lastPage = page;
+            });
+            
+            html += '</table>';
+            
+            if (issues.length > 0) {
+                html += '<div class="critical">';
+                html += '<h3>🔴 发现问题：后端返回的 page 字段本身就是乱序的！</h3>';
+                html += '<p>找到 ' + issues.length + ' 处 page 字段递减的情况：</p>';
+                html += '<ul>';
+                issues.forEach(issue => {
+                    html += `<li>索引 ${issue.idx}: page=${issue.page} (前一个是 ${issue.lastPage})<br>文本: ${issue.text}</li>`;
+                });
+                html += '</ul>';
+                html += '<p><strong>这说明 OCR 解析器返回的数据顺序就是错的！</strong></p>';
+                html += '<p><strong>前端排序只能按照 page 字段排序，如果 page 字段本身就错了，排序也没用！</strong></p>';
+                html += '</div>';
+            } else {
+                html += '<div style="background: #d4edda; padding: 10px; margin-top: 10px;">';
+                html += '✅ 后端 page 字段看起来是递增的';
+                html += '</div>';
+            }
+            
+            resultDiv.innerHTML = html;
+        }
+
+        function checkBlocksPageIdx() {
+            const resultDiv = document.getElementById('result');
+            const result = window.diffStore?.getState()?.comparisonResult;
+            
+            if (!result || !result.textDiff || !result.textDiff.diffs) {
+                resultDiv.innerHTML = '<p class="error">无法获取对比结果</p>';
+                return;
+            }
+
+            let html = '<h2>解析后 blocks 的 pageIdx：</h2>';
+            html += '<table>';
+            html += '<tr><th>diff索引</th><th>pageIdx</th><th>index</th><th>文本预览</th><th>问题</th></tr>';
+            
+            const diffs = result.textDiff.diffs;
+            let lastPageIdx = -1;
+            let issues = [];
+            
+            diffs.forEach((diff, idx) => {
+                const block = diff.rightBlock;
+                if (!block.text) return;
+                
+                const pageIdx = block.pageIdx;
+                const index = block.index;
+                const text = block.text.substring(0, 40);
+                
+                let issue = '';
+                let rowClass = '';
+                
+                if (pageIdx < lastPageIdx) {
+                    issue = `⚠️ pageIdx 递减！从 ${lastPageIdx} → ${pageIdx}`;
+                    rowClass = 'error';
+                    issues.push({ idx, pageIdx, lastPageIdx, text });
+                }
+                
+                if (text.includes('面政治舆情')) {
+                    issue += ' ⭐ 这是问题段落！';
+                    rowClass = 'warning';
+                }
+                
+                html += `<tr class="${rowClass}">`;
+                html += `<td>${idx}</td>`;
+                html += `<td>${pageIdx} (第${pageIdx+1}页)</td>`;
+                html += `<td>${index}</td>`;
+                html += `<td>${text}</td>`;
+                html += `<td>${issue}</td>`;
+                html += '</tr>';
+                
+                lastPageIdx = pageIdx;
+            });
+            
+            html += '</table>';
+            
+            if (issues.length > 0) {
+                html += '<div class="critical">';
+                html += '<h3>🔴 排序后 pageIdx 仍然乱序！</h3>';
+                html += '<p>这说明排序逻辑有问题，或者 page→pageIdx 的转换有问题</p>';
+                html += '</div>';
+            } else {
+                html += '<div style="background: #d4edda; padding: 10px; margin-top: 10px;">';
+                html += '✅ blocks 的 pageIdx 是递增的（排序生效了）';
+                html += '</div>';
+            }
+            
+            resultDiv.innerHTML = html;
+        }
+
+        function checkDiffsOrder() {
+            const resultDiv = document.getElementById('result');
+            const diffs = window.diffStore?.getState()?.comparisonResult?.textDiff?.diffs;
+            
+            if (!diffs) {
+                resultDiv.innerHTML = '<p class="error">无法获取 diffs</p>';
+                return;
+            }
+
+            let html = '<h2>最终 diffs 数组顺序（右侧显示）：</h2>';
+            html += '<p>只显示有内容的段落（会实际渲染的）</p>';
+            html += '<table>';
+            html += '<tr><th>显示顺序</th><th>diff索引</th><th>pageIdx</th><th>文本预览</th></tr>';
+            
+            let displayOrder = 0;
+            
+            diffs.forEach((diff, idx) => {
+                const block = diff.rightBlock;
+                if (!block.text) return;
+                
+                // 模拟渲染条件
+                const hasContentOnRightSide = diff.diffs.some(([op]) => op === 1 || op === 0);
+                if (!hasContentOnRightSide && diff.hasDiff) return;
+                
+                const pageIdx = block.pageIdx;
+                const text = block.text.substring(0, 40);
+                
+                let rowClass = '';
+                if (text.includes('面政治舆情')) {
+                    rowClass = 'warning';
+                }
+                
+                html += `<tr class="${rowClass}">`;
+                html += `<td>${displayOrder}</td>`;
+                html += `<td>${idx}</td>`;
+                html += `<td>第${pageIdx+1}页</td>`;
+                html 
