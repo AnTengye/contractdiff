@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>段落排序诊断</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; }
+        .error { color: red; font-weight: bold; }
+        .warning { color: orange; }
+        .success { color: green; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .highlight { background-color: yellow; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>段落排序问题诊断</h1>
+    
+    <div class="section">
+        <h2>问题描述</h2>
+        <p class="error">第3页的内容出现在了最后，而不是按照页码顺序显示</p>
+        <p>期望顺序: 第1页 → 第2页 → 第3页 → 第4页 → ...</p>
+        <p>实际顺序: 第1页 → 第2页 → 第4页 → ... → 第3页（最后）</p>
+    </div>
+
+    <div class="section">
+        <h2>诊断步骤</h2>
+        <p>请在浏览器控制台运行以下命令：</p>
+        
+        <h3>1. 检查原始数据顺序</h3>
+        <pre>
+// 获取左右侧的原始块数据
+const leftData = contractStore.getState().left.data;
+const rightData = contractStore.getState().right.data;
+
+// 检查 paragraphs 数组的顺序
+console.log("=== 左侧段落顺序 ===");
+leftData.paragraphs?.forEach((p, idx) => {
+    console.log(`[${idx}] page=${p.page}, index=${p.index}, text=${p.lines?.[0]?.spans?.[0]?.content?.substring(0, 30)}...`);
+});
+
+console.log("\n=== 右侧段落顺序 ===");
+rightData.paragraphs?.forEach((p, idx) => {
+    console.log(`[${idx}] page=${p.page}, index=${p.index}, text=${p.lines?.[0]?.spans?.[0]?.content?.substring(0, 30)}...`);
+});
+        </pre>
+
+        <h3>2. 检查 VisualBlock 顺序</h3>
+        <pre>
+// 检查解析后的块顺序
+const result = diffStore.getState().comparisonResult;
+const leftBlocks = result?.textDiff?.diffs?.map(d => d.leftBlock);
+const rightBlocks = result?.textDiff?.diffs?.map(d => d.rightBlock);
+
+console.log("=== 左侧 VisualBlock 顺序 ===");
+leftBlocks?.forEach((b, idx) => {
+    if (b.text) {
+        console.log(`[${idx}] pageIdx=${b.pageIdx}, index=${b.index}, text=${b.text.substring(0, 30)}...`);
+    }
+});
+
+console.log("\n=== 右侧 VisualBlock 顺序 ===");
+rightBlocks?.forEach((b, idx) => {
+    if (b.text) {
+        console.log(`[${idx}] pageIdx=${b.pageIdx}, index=${b.index}, text=${b.text.substring(0, 30)}...`);
+    }
+});
+        </pre>
+
+        <h3>3. 检查对齐结果顺序</h3>
+        <pre>
+// 检查对齐后的顺序
+const alignments = result?.textDiff?.alignments;
+
+console.log("=== 对齐结果顺序 ===");
+alignments?.forEach((a, idx) => {
+    console.log(`[${idx}] leftIndex=${a.leftIndex}, rightIndex=${a.rightIndex}, matchType=${a.matchType}, similarity=${a.similarity.toFixed(2)}`);
+});
+
+// 查找第3页的段落在哪里
+const page3Text = "面政治舆情或损害国家安全和利益的风险";
+const page3AlignmentIndex = alignments?.findIndex(a => {
+    const leftBlock = a.leftIndex !== null ? leftBlocks[alignments.indexOf(a)]?.leftBlock : null;
+    const rightBlock = a.rightIndex !== null ? rightBlocks[alignments.indexOf(a)]?.rightBlock : null;
+    return leftBlock?.text?.includes(page3Text) || rightBlock?.text?.includes(page3Text);
+});
+
+console.log(`\n第3页段落在对齐数组中的位置: ${page3AlignmentIndex}`);
+console.log(`总对齐数量: ${alignments?.length}`);
+        </pre>
+
+        <h3>4. 检查排序逻辑执行情况</h3>
+        <pre>
+// 查看 blockAlignment.ts 第 139-144 行的排序逻辑是否执行
+// 检查对齐结果是否按照 leftIndex/rightIndex 排序
+
+const sortedCheck = alignments?.map((a, idx) => {
+    const pos = a.leftIndex !== null ? a.leftIndex : 1000000 + (a.rightIndex || 0);
+    return { idx, pos, leftIndex: a.leftIndex, rightIndex: a.rightIndex };
+});
+
+console.log("\n=== 排序位置检查 ===");
+sortedCheck?.forEach(item => {
+    console.log(`对齐[${item.idx}]: pos=${item.pos}, leftIndex=${item.leftIndex}, rightIndex=${item.rightIndex}`);
+});
+
+// 检查是否真的按 pos 排序了
+const isSorted = sortedCheck?.every((item, idx) => 
+    idx === 0 || item.pos >= sortedCheck[idx - 1].pos
+);
+
+console.log(`\n排序检查结果: ${isSorted ? '✅ 已正确排序' : '❌ 排序错误'}`);
+        </pre>
+    </div>
+
+    <div class="section">
+        <h2>可能的原因</h2>
+        <ol>
+            <li><strong>后端数据顺序错误</strong> - paragraphs 数组本身就是乱序的</li>
+            <li><strong>块对齐算法问题</strong> - unmatched 块被添加到最后</li>
+            <li><strong>排序逻辑失效</strong> - blockAlignment.ts 第 139-144 行的排序没有生效</li>
+            <li><strong>渲染顺序问题</strong> - DiffPaneV2 按照 diffs 数组顺序渲染，但 diffs 顺序不对</li>
+        </ol>
+    </div>
+
+    <div class="section">
+        <h2>预期的排序逻辑</h2>
+        <p>在 <code>blockAlignment.ts</code> 第 139-144 行：</p>
+        <pre>
+// Sort alignments by position (left first, then right)
+alignments.sort((a, b) => {
+  const aPos = a.leftIndex !== null ? a.leftIndex : 1000000 + (a.rightIndex || 0);
+  const bPos = b.leftIndex !== null ? b.leftIndex : 1000000 + (b.rightIndex || 0);
+  return aPos - bPos;
+});
+        </pre>
+        <p><strong>逻辑解释：</strong></p>
+        <ul>
+            <li>如果有 leftIndex，使用 leftIndex 作为排序位置</li>
+            <li>如果没有 leftIndex（右侧新增），使用 1000000 + rightIndex</li>
+            <li>这样左侧的块会按照原始顺序排在前面，右侧新增的排在后面</li>
+        </ul>
+        <p class="warning">⚠️ 这个逻辑可能导致问题：右侧新增的块全部排到最后！</p>
+    </div>
+
+    <div class="section">
+        <h2>问题根源分析</h2>
+        <p class="error">如果第3页的段落是"右侧新增"（leftIndex = null），它会被排到 1000000+ 的位置，出现在最后！</p>
+        
+        <h3>示例：</h3>
+        <table>
+            <tr>
+                <th>对齐</th>
+                <th>leftIndex</th>
+                <th>rightIndex</th>
+                <th>计算的 pos</th>
+                <th>排序后位置</th>
+            </tr>
+            <tr>
+                <td>第1页段落</td>
+                <td>0</td>
+                <td>0</td>
+                <td>0</td>
+                <td>1</td>
+            </tr>
+            <tr>
+                <td>第2页段落</td>
+                <td>1</td>
+                <td>1</td>
+                <td>1</td>
+                <td>2</td>
+            </tr>
+            <tr class="highlight">
+                <td>第3页段落</td>
+                <td>null</td>
+                <td>4</td>
+                <td>1000004</td>
+                <td>最后！</td>
+            </tr>
+            <tr>
+                <td>第4页段落</td>
+                <td>2</td>
+                <td>5</td>
+                <td>2</td>
+                <td>3</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>解决方案</h2>
+        <p class="success">需要改进排序逻辑，使用页码和块索引进行排序，而不是基于对齐索引</p>
+        
+        <h3>建议的新排序逻辑：</h3>
+        <pre>
+// 使用页码和块索引排序
+alignments.sort((a, b) => {
+  const getBlockInfo = (alignment, blocks, side) => {
+    const idx = side === 'left' ? alignment.leftIndex : alignment.rightIndex;
+    if (idx === null) return null;
+    const block = blocks[idx];
+    return { pageIdx: block.pageIdx, index: block.index };
+  };
+  
+  const aLeft = getBlockInfo(a, leftBlocks, 'left');
+  const aRight = getBlockInfo(a, rightBlocks, 'right');
+  const bLeft = getBlockInfo(b, leftBlocks, 'left');
+  const bRight = getBlockInfo(b, rightBlocks, 'right');
+  
+  // 优先使用左侧的页码和索引
+  const aInfo = aLeft || aRight;
+  const bInfo = bLeft || bRight;
+  
+  if (!aInfo || !bInfo) return 0;
+  
+  // 先按页码排序，再按索引排序
+  if (aInfo.pageIdx !== bInfo.pageIdx) {
+    return aInfo.pageIdx - bInfo.pageIdx;
+  }
+  return aInfo.index - bInfo.index;
+});
+        </pre>
+    </div>
+
+    <script>
+        console.log('%c段落排序诊断工具已加载', 'color: blue; font-weight: bold; font-size: 16px;');
+        console.log('请按照页面上的步骤运行诊断命令');
+    </script>
+</body>
+</html>

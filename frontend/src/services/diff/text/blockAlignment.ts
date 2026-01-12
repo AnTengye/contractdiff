@@ -230,12 +230,36 @@ export function alignBlocks(
     }
   }
   
-  // Sort alignments by position (left first, then right)
+  // Sort alignments by page number and block index (not by alignment position)
+  // This ensures blocks appear in document order, not in matched/unmatched order
   alignments.sort((a, b) => {
-    const aPos = a.leftIndex !== null ? a.leftIndex : 1000000 + (a.rightIndex || 0);
-    const bPos = b.leftIndex !== null ? b.leftIndex : 1000000 + (b.rightIndex || 0);
-    return aPos - bPos;
+    // Get block info for sorting
+    const getBlockInfo = (alignment: BlockAlignment) => {
+      // Prefer left block if it exists, otherwise use right block
+      const blockIndex = alignment.leftIndex !== null ? alignment.leftIndex : alignment.rightIndex;
+      if (blockIndex === null) return { pageIdx: 999999, index: 999999 };
+      
+      const block = alignment.leftIndex !== null 
+        ? leftBlocks[alignment.leftIndex]! 
+        : rightBlocks[alignment.rightIndex!]!;
+      
+      return {
+        pageIdx: block.pageIdx,
+        index: block.index,
+      };
+    };
+    
+    const aInfo = getBlockInfo(a);
+    const bInfo = getBlockInfo(b);
+    
+    // Sort by page first, then by block index within page
+    if (aInfo.pageIdx !== bInfo.pageIdx) {
+      return aInfo.pageIdx - bInfo.pageIdx;
+    }
+    return aInfo.index - bInfo.index;
   });
+  
+  console.log('[BlockAlign] Sorted alignments by page and index order');
   
   return alignments;
 }

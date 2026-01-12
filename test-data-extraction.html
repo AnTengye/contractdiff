@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>测试数据提取</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; }
+        .result { background: #f0f0f0; padding: 10px; margin: 10px 0; }
+        .success { color: green; }
+        .error { color: red; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>测试段落数据提取</h1>
+    
+    <div class="test-section">
+        <h2>测试用例：你提供的数据</h2>
+        <pre id="input-data"></pre>
+        <button onclick="testExtraction()">运行测试</button>
+        <div id="test-result"></div>
+    </div>
+
+    <script>
+        // 你提供的数据
+        const testBlock = {
+            "angle": 0,
+            "bbox": [45, 74, 554, 106],
+            "index": 4,
+            "lines": [
+                {
+                    "bbox": [45, 74, 554, 106],
+                    "spans": [
+                        {
+                            "bbox": [45, 74, 554, 106],
+                            "content": "面政治舆情或损害国家安全和利益的风险，甲方有权取消乙方参展资格，乙方已支付的展位费不予退还。",
+                            "type": "text"
+                        }
+                    ]
+                }
+            ],
+            "page": 3,
+            "type": "text"
+        };
+
+        // 前端的 extractBlockText 函数（复制自 comparisonEngine.ts）
+        function extractBlockText(block) {
+            let text = '';
+            
+            // Check if block has text property directly
+            if (block.text && typeof block.text === 'string') {
+                return block.text;
+            }
+            
+            // Handle nested blocks (like list items)
+            if (block.blocks && Array.isArray(block.blocks)) {
+                for (const subBlock of block.blocks) {
+                    const subText = extractBlockText(subBlock);
+                    if (subText) {
+                        text += subText + '\n';
+                    }
+                }
+            }
+            
+            // Handle lines/spans structure
+            if (block.lines && Array.isArray(block.lines)) {
+                for (const line of block.lines) {
+                    if (line.spans && Array.isArray(line.spans)) {
+                        for (const span of line.spans) {
+                            if (span.content) {
+                                text += span.content;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return text;
+        }
+
+        function testExtraction() {
+            const resultDiv = document.getElementById('test-result');
+            
+            console.log('测试块数据:', testBlock);
+            
+            // 测试提取
+            const extractedText = extractBlockText(testBlock);
+            
+            console.log('提取的文本:', extractedText);
+            console.log('文本长度:', extractedText.length);
+            console.log('是否为空:', !extractedText);
+            
+            let html = '<h3>测试结果：</h3>';
+            
+            if (extractedText) {
+                html += `<div class="result success">`;
+                html += `<p><strong>✅ 成功提取文本</strong></p>`;
+                html += `<p>文本内容: <code>${extractedText}</code></p>`;
+                html += `<p>文本长度: ${extractedText.length} 字符</p>`;
+                html += `</div>`;
+                
+                // 检查是否会被跳过
+                const wouldBeSkipped = !extractedText;
+                html += `<div class="result ${wouldBeSkipped ? 'error' : 'success'}">`;
+                html += `<p>在 DiffPaneV2 中会被跳过？ <strong>${wouldBeSkipped ? '是 ❌' : '否 ✅'}</strong></p>`;
+                html += `<p>判断条件: <code>!block.text && !diff.hasDiff</code></p>`;
+                html += `<p>block.text = "${extractedText}"</p>`;
+                html += `</div>`;
+            } else {
+                html += `<div class="result error">`;
+                html += `<p><strong>❌ 未能提取文本</strong></p>`;
+                html += `<p>这个块会被跳过显示</p>`;
+                html += `</div>`;
+            }
+            
+            // 检查数据结构
+            html += `<div class="result">`;
+            html += `<p><strong>数据结构检查：</strong></p>`;
+            html += `<ul>`;
+            html += `<li>有 text 属性？ ${testBlock.text ? '✅' : '❌'}</li>`;
+            html += `<li>有 lines 数组？ ${testBlock.lines ? '✅' : '❌'} (长度: ${testBlock.lines?.length || 0})</li>`;
+            html += `<li>有 spans 数组？ ${testBlock.lines?.[0]?.spans ? '✅' : '❌'} (长度: ${testBlock.lines?.[0]?.spans?.length || 0})</li>`;
+            html += `<li>spans[0] 有 content？ ${testBlock.lines?.[0]?.spans?.[0]?.content ? '✅' : '❌'}</li>`;
+            html += `<li>content 值: <code>${testBlock.lines?.[0]?.spans?.[0]?.content || '空'}</code></li>`;
+            html += `</ul>`;
+            html += `</div>`;
+            
+            resultDiv.innerHTML = html;
+        }
+
+        // 显示输入数据
+        document.getElementById('input-data').textContent = JSON.stringify(testBlock, null, 2);
+        
+        // 自动运行测试
+        window.onload = () => {
+            testExtraction();
+        };
+    </script>
+</body>
+</html>
