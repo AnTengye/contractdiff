@@ -53,6 +53,16 @@ export function parseVisualBlocks(data: ContractData): VisualBlock[] {
       });
     }
     
+    // CRITICAL FIX: Sort blocks by page and index to ensure correct order
+    // This fixes the issue where backend data might be in wrong order
+    blocks.sort((a, b) => {
+      if (a.pageIdx !== b.pageIdx) {
+        return a.pageIdx - b.pageIdx;
+      }
+      return a.index - b.index;
+    });
+    
+    console.log('[Parser] Sorted blocks by page and index order');
     console.log('[Parser] Extracted', blocks.length, 'blocks from paragraphs');
   }
   
@@ -97,6 +107,16 @@ export function parseVisualBlocks(data: ContractData): VisualBlock[] {
     }
     
     console.log('[Parser] Extracted', blocks.length, 'blocks from pdf_info');
+    
+    // CRITICAL FIX: Sort blocks by page and index for pdf_info format too
+    blocks.sort((a, b) => {
+      if (a.pageIdx !== b.pageIdx) {
+        return a.pageIdx - b.pageIdx;
+      }
+      return a.index - b.index;
+    });
+    
+    console.log('[Parser] Sorted blocks by page and index order');
   }
   
   if (blocks.length === 0) {

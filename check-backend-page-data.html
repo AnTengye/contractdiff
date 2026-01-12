@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>后端页码数据检查</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .critical { background: #ffcccc; padding: 20px; margin: 20px 0; border: 2px solid red; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .error { background-color: #ffcccc; }
+        .warning { background-color: #fff3cd; }
+        button { padding: 10px 20px; font-size: 14px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🔍 后端页码数据诊断工具</h1>
+    
+    <div class="critical">
+        <h2>⚠️ 关键发现</h2>
+        <p><strong>问题：显示顺序混乱 - 第3页 → 第2页 → 第3页</strong></p>
+        <p>这通常意味着后端返回的数据中，<code>page</code> 字段本身就是乱序的！</p>
+        <p><strong>需要立即检查：后端 JSON 数据中每个段落的 page 字段是否正确</strong></p>
+    </div>
+
+    <div class="section">
+        <h2>步骤 1: 检查后端原始数据</h2>
+        <button onclick="checkBackendData()">运行检查</button>
+        <div id="backend-check-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>步骤 2: 检查 VisualBlock 的 pageIdx</h2>
+        <button onclick="checkVisualBlocks()">运行检查</button>
+        <div id="visual-check-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>步骤 3: 检查最终显示顺序</h2>
+        <button onclick="checkFinalOrder()">运行检查</button>
+        <div id="final-check-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>步骤 4: 检查具体段落的 page 值</h2>
+        <p>查找包含 "面政治舆情" 的段落：</p>
+        <button onclick="findSpecificParagraph()">查找段落</button>
+        <div id="specific-para-result"></div>
+    </div>
+
+    <script>
+        function checkBackendData() {
+            const resultDiv = document.getElementById('backend-check-result');
+            
+            try {
+                const rightData = window.contractStore?.getState()?.right?.data;
+                
+                if (!rightData || !rightData.paragraphs) {
+                    resultDiv.innerHTML = '<p class="error">❌ 无法获取右侧合同数据！请确保已上传并对比了合同。</p>';
+                    return;
+                }
+
+                let html = '<h3>右侧合同后端数据检查：</h3>';
+                html += '<table>';
+                html += '<tr><th>数组索引</th><th>page</th><th>index</th><th>文本预览</th><th>问题</th></tr>';
+                
+                const paragraphs = rightData.paragraphs;
+                let lastPage = -1;
+                let hasOrderIssue = false;
+                
+                paragraphs.forEach((para, idx) => {
+                    const page = para.page || 0;
+                    const index = para.index !== undefined ? para.index : '未定义';
+                    const text = para.lines?.[0]?.spans?.[0]?.content || '(空)';
+                    const preview = text.substring(0, 40);
+                    
+                    // 检查页码是否递减
+                    let issue = '';
+                    let rowClass = '';
+                    if (page < lastPage) {
+                        issue = '⚠️ 页码递减！';
+                        rowClass = 'warning';
+                        hasOrderIssue = true;
+                    } else if (page === lastPage && index !== '未定义' && typeof lastIndex !== 'undefined' && index < lastIndex) {
+                        issue = '⚠️ 同页内索引递减！';
+                        rowClass = 'warning';
+                        hasOrderIssue = true;
+                    }
+                    
+                    html += `<tr class="${rowClass}">`;
+                    html += `<td>${idx}</td>`;
+                    html += `<td>${page}</td>`;
+                    html += `<td>${index}</td>`;
+                    html += `<td>${preview}</td>`;
+                    html += `<td>${issue}</td>`;
+                    html += '</tr>';
+                    
+                    lastPage = page;
+                    window.lastIndex = index;
+                });
+                
+                html += '</table>';
+                
+                if (hasOrderIssue) {
+                    html += '<div class="error" style="margin-top: 10px; padding: 10px;">';
+                    html += '<strong>❌ 发现问题：后端数据本身就是乱序的！</strong><br>';
+                    html += '这意味着 OCR 解析器返回的段落顺序就是错的，或者后端没有正确保存顺序。<br>';
+                    html += '<strong>解决方案：需要在后端排序，或者前端解析时就按 page 和 index 排序。</strong>';
+                    html += '</div>';
+                } else {
+                    html += '<div style="margin-top: 10px; padding: 10px; background: #d4edda;">';
+                    html += '✅ 后端数据顺序看起来正常（按 page 递增）';
+                    html += '</div>';
+                }
+                
+                resultDiv.innerHTML = html;
+                
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ 检查失败: ${error.message}</p>`;
+            }
+        }
+
+        function checkVisualBlocks() {
+            const resultDiv = document.getElementById('visual-check-result');
+            
+            try {
+                const result = window.diffStore?.getState()?.comparisonResult;
+                
+                if (!result || !result.textDiff || !result.textDiff.diffs) {
+                    resultDiv.innerHTML = '<p class="error">❌ 无法获取对比结果！请确保已运行对比。</p>';
+                    return;
+                }
+
+                const diffs = result.textDiff.diffs;
+                
+                let html = '<h3>VisualBlock 的 pageIdx 检查（右侧）：</h3>';
+                html += '<table>';
+                html += '<tr><th>diff索引</th><th>pageIdx</th><th>index</th><th>文本预览</th><th>问题</th></tr>';
+                
+                let lastPageIdx = -1;
+                let hasOrderIssue = false;
+                
+                diffs.forEach((diff, idx) => {
+                    const block = diff.rightBlock;
+                    if (!block.text) return; // 跳过空块
+                    
+                    const pageIdx = block.pageIdx;
+                    const index = block.index;
+                    const preview = block.text.substring(0, 40);
+                    
+                    let issue = '';
+                    let rowClass = '';
+                    if (pageIdx < lastPageIdx) {
+                        issue = '⚠️ pageIdx 递减！';
+                        rowClass = 'warning';
+                        hasOrderIssue = true;
+                    }
+                    
+                    html += `<tr class="${rowClass}">`;
+                    html += `<td>${idx}</td>`;
+                    html += `<td>${pageIdx} (第${pageIdx + 1}页)</td>`;
+                    html += `<td>${index}</td>`;
+                    html += `<td>${preview}</td>`;
+                    html += `<td>${issue}</td>`;
+                    html += '</tr>';
+                    
+                    lastPageIdx = pageIdx;
+                });
+                
+                html += '</table>';
+                
+                if (hasOrderIssue) {
+                    html += '<div class="error" style="margin-top: 10px; padding: 10px;">';
+                    html += '<strong>❌ 发现问题：VisualBlock 的 pageIdx 是乱序的！</strong><br>';
+                    html += '这说明排序逻辑没有生效，或者排序后又被打乱了。';
+                    html += '</div>';
+                } else {
+                    html += '<div style="margin-top: 10px; padding: 10px; background: #d4edda;">';
+                    html += '✅ VisualBlock 的 pageIdx 顺序正常';
+                    html += '</div>';
+                }
+                
+                resultDiv.innerHTML = html;
+                
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ 检查失败: ${error.message}</p>`;
+            }
+        }
+
+        function checkFinalOrder() {
+            const resultDiv = document.getElementById('final-check-result');
+            
+            try {
+                const result = window.diffStore?.getState()?.comparisonResult;
+                const alignments = result?.textDiff?.alignments;
+                const diffs = result?.textDiff?.diffs;
+   

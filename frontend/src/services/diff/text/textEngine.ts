@@ -58,6 +58,26 @@ export function computeTextDiff(
     diffs.push(diff);
   }
   
+  // CRITICAL FIX: Sort diffs by page and index to ensure correct display order
+  // This is a backup in case blocks or alignments are not properly sorted
+  diffs.sort((a, b) => {
+    const getBlockInfo = (diff: CharacterDiff) => {
+      // Use the block that has content
+      const block = diff.leftBlock.text ? diff.leftBlock : diff.rightBlock;
+      return { pageIdx: block.pageIdx, index: block.index };
+    };
+    
+    const aInfo = getBlockInfo(a);
+    const bInfo = getBlockInfo(b);
+    
+    if (aInfo.pageIdx !== bInfo.pageIdx) {
+      return aInfo.pageIdx - bInfo.pageIdx;
+    }
+    return aInfo.index - bInfo.index;
+  });
+  
+  console.log('[TextEngine] Sorted diffs by page and index order');
+  
   // Step 3: Calculate statistics
   const stats = calculateAlignmentStats(alignments, leftBlocks.length, rightBlocks.length);
   
