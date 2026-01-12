@@ -1,7 +1,8 @@
 // Main application entry point
 import { UploadCard, DiffPane, PdfViewer, StatsPanel, setupZoomControls } from '@/components';
-import { runComparison } from '@/features/comparison';
+import { runComparisonV2 } from '@/features/comparison';
 import { setupSyncScroll } from '@/features/sync';
+import { DiffNavigation } from '@/features/navigation/diffNavigation';
 import { contractStore, selectCanCompare, uiStore } from '@/store';
 import { getCurrentUser, getParsers } from '@/services/api';
 import { isAuthenticated, redirectToLogin, clearAuth, getUser } from '@/utils/auth';
@@ -68,6 +69,7 @@ async function init(): Promise<void> {
   new PdfViewer('left');
   new PdfViewer('right');
   new StatsPanel();
+  new DiffNavigation();
 
   // Setup zoom controls
   setupZoomControls();
@@ -76,7 +78,8 @@ async function init(): Promise<void> {
   const compareBtn = getRequiredElement('compare-btn');
 
   compareBtn.addEventListener('click', () => {
-    runComparison();
+    // Use new V2 comparison engine
+    runComparisonV2();
   });
 
   // Update compare button state based on data availability

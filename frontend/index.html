@@ -162,11 +162,27 @@
                     <div class="glass-panel" style="padding: 1rem;">
                         <div class="header" style="margin-bottom: 0.5rem; padding: 0 0.5rem;">
                             <h2>原件视觉比对</h2>
-                            <div class="zoom-controls" style="display: flex; gap: 0.5rem; align-items: center;">
-                                <button class="btn btn-ghost" id="zoom-out" style="padding: 2px 8px;">-</button>
-                                <span id="zoom-level"
-                                    style="font-size: 0.9rem; min-width: 40px; text-align: center;">100%</span>
-                                <button class="btn btn-ghost" id="zoom-in" style="padding: 2px 8px;">+</button>
+                            <div style="display: flex; gap: 1rem; align-items: center;">
+                                <!-- Diff Navigation Controls -->
+                                <div class="diff-nav-controls" id="diff-nav-controls" style="display: none;">
+                                    <button class="btn btn-ghost btn-sm" id="prev-diff-btn" title="上一个差异 (↑ or K)">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polyline points="15 18 9 12 15 6"></polyline>
+                                        </svg>
+                                    </button>
+                                    <span class="diff-counter" id="diff-counter">0 / 0</span>
+                                    <button class="btn btn-ghost btn-sm" id="next-diff-btn" title="下一个差异 (↓ or J)">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polyline points="9 18 15 12 9 6"></polyline>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="zoom-controls" style="display: flex; gap: 0.5rem; align-items: center;">
+                                    <button class="btn btn-ghost" id="zoom-out" style="padding: 2px 8px;">-</button>
+                                    <span id="zoom-level"
+                                        style="font-size: 0.9rem; min-width: 40px; text-align: center;">100%</span>
+                                    <button class="btn btn-ghost" id="zoom-in" style="padding: 2px 8px;">+</button>
+                                </div>
                             </div>
                         </div>
 

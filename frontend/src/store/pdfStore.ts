@@ -2,6 +2,7 @@
 import { Store } from './Store';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { Annotations } from '@/types';
+import type { VisualAnnotation } from '@/services/diff/visual';
 import { ZOOM } from '@/constants';
 
 interface PdfState {
@@ -10,6 +11,8 @@ interface PdfState {
   zoomLevel: number;
   leftAnnotations: Annotations;
   rightAnnotations: Annotations;
+  leftVisualAnnotations: Map<number, VisualAnnotation[]>;
+  rightVisualAnnotations: Map<number, VisualAnnotation[]>;
 }
 
 const initialState: PdfState = {
@@ -18,6 +21,8 @@ const initialState: PdfState = {
   zoomLevel: ZOOM.DEFAULT,
   leftAnnotations: {},
   rightAnnotations: {},
+  leftVisualAnnotations: new Map(),
+  rightVisualAnnotations: new Map(),
 };
 
 export const pdfStore = new Store(initialState);
@@ -49,6 +54,16 @@ export const pdfActions = {
 
   setAnnotations(left: Annotations, right: Annotations) {
     pdfStore.setState({ leftAnnotations: left, rightAnnotations: right });
+  },
+
+  setVisualAnnotations(
+    left: Map<number, VisualAnnotation[]>,
+    right: Map<number, VisualAnnotation[]>
+  ) {
+    pdfStore.setState({
+      leftVisualAnnotations: left,
+      rightVisualAnnotations: right,
+    });
   },
 
   reset() {
