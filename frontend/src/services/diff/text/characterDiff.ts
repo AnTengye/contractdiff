@@ -110,5 +110,6 @@ export function getOCRNormalizationOptions(): NormalizationOptions {
     normalizeFullwidth: true,
     normalizeDashes: true,
     removeInvisibleChars: true,
+    stripAllWhitespace: true, // Enable aggressive whitespace stripping to match legacy behavior
   };
 }

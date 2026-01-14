@@ -7,44 +7,6 @@ import { computeTextDiff, exportTextDiffDebug } from '../text';
 import { computeVisualDiff, exportVisualDiffDebug } from '../visual';
 
 /**
- * Infer page index from bbox coordinates
- * This is a fallback when backend page field is unreliable
- */
-function inferPageFromBbox(bbox: number[] | undefined, declaredPage: number): number {
-  // If no bbox data, trust the declared page
-  if (!bbox || bbox.length < 4) {
-    return (declaredPage || 1) - 1;
-  }
-  
-  const y = bbox[1]!;  // Y coordinate
-  const pageHeight = 792;  // Standard PDF page height in points
-  
-  // Infer page based on Y coordinate
-  // Y=0-792: page 1 (pageIdx=0)
-  // Y=792-1584: page 2 (pageIdx=1)
-  // etc.
-  const inferredPageIdx = Math.floor(y / pageHeight);
-  const declaredPageIdx = (declaredPage || 1) - 1;
-  
-  // If inferred page differs significantly from declared page (>1 page difference)
-  // trust the bbox-based inference as backend page field may be wrong
-  if (Math.abs(inferredPageIdx - declaredPageIdx) > 1) {
-    console.warn(
-      `[Parser] Page mismatch detected:`,
-      `declared=page${declaredPage}(idx${declaredPageIdx})`,
-      `inferred=page${inferredPageIdx + 1}(idx${inferredPageIdx})`,
-      `bbox=[${bbox.join(',')}]`,
-      `→ Using inferred page`
-    );
-    return inferredPageIdx;
-  }
-  
-  // If difference is small (0-1 pages), trust declared page
-  // as bbox might be slightly off due to margins
-  return declaredPageIdx;
-}
-
-/**
  * Parse contract data and extract blocks with visual information
  */
 export function parseVisualBlocks(data: ContractData): VisualBlock[] {
@@ -79,13 +41,10 @@ export function parseVisualBlocks(data: ContractData): VisualBlock[] {
         }
       }
       
-      // CRITICAL FIX: Use bbox-based page inference to fix backend page field errors
-      const pageIdx = inferPageFromBbox(para.bbox, para.page || 1);
-      
       blocks.push({
         index: para.index || blocks.length,
         text: displayText,
-        pageIdx,  // Use inferred pageIdx instead of direct calculation
+        pageIdx: (para.page || 1) - 1,
         type: para.type,
         bbox: para.bbox || [0, 0, 0, 0],
         pageSize: [612, 792],
@@ -94,16 +53,6 @@ export function parseVisualBlocks(data: ContractData): VisualBlock[] {
       });
     }
     
-    // CRITICAL FIX: Sort blocks by page and index to ensure correct order
-    // This fixes the issue where backend data might be in wrong order
-    blocks.sort((a, b) => {
-      if (a.pageIdx !== b.pageIdx) {
-        return a.pageIdx - b.pageIdx;
-      }
-      return a.index - b.index;
-    });
-    
-    console.log('[Parser] Sorted blocks by page and index order');
     console.log('[Parser] Extracted', blocks.length, 'blocks from paragraphs');
   }
   
@@ -148,17 +97,8 @@ export function parseVisualBlocks(data: ContractData): VisualBlock[] {
     }
     
     console.log('[Parser] Extracted', blocks.length, 'blocks from pdf_info');
-    
-    // CRITICAL FIX: Sort blocks by page and index for pdf_info format too
-    blocks.sort((a, b) => {
-      if (a.pageIdx !== b.pageIdx) {
-        return a.pageIdx - b.pageIdx;
-      }
-      return a.index - b.index;
-    });
-    
-    console.log('[Parser] Sorted blocks by page and index order');
   }
+
   
   if (blocks.length === 0) {
     console.warn('[Parser] No blocks extracted! Data structure may not match expected format.');

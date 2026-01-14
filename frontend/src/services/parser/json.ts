@@ -75,10 +75,15 @@ export function mergeCrossPageParagraphs(paragraphs: Paragraph[]): Paragraph[] {
       current.text = current.text + next.text;
       // Merge block references from the next paragraph
       if (next.sourceBlocks) {
+        // Ensure sourceBlocks is initialized
+        if (!current.sourceBlocks) {
+          current.sourceBlocks = [];
+        }
         current.sourceBlocks.push(...next.sourceBlocks);
       }
       i++;
     }
+
 
     merged.push(current);
     i++;
@@ -118,75 +123,120 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
     const paragraphs: Paragraph[] = [];
 
     for (const para of json.paragraphs as Block[]) {
-      const blockText = extractBlockText(para);
-      if (blockText) {
-        const blockRef: BlockReference = {
-          blockIdx: para.index || 0,
-          pageIdx: (para.page || 1) - 1, // Convert 1-indexed to 0-indexed
-          bbox: para.bbox || [0, 0, 0, 0],
-          pageSize: [612, 792], // Default page size
-          text: blockText.trim(),
-        };
+      // Handle nested blocks first
+      if (para.blocks && para.blocks.length > 0) {
+        for (const subBlock of para.blocks) {
+          const subText = extractBlockText(subBlock);
+          if (subText) {
+            const blockRef: BlockReference = {
+              blockIdx: subBlock.index || para.index || 0,
+              pageIdx: (para.page || 1) - 1,
+              bbox: subBlock.bbox || para.bbox || [0, 0, 0, 0],
+              pageSize: [612, 792],
+              text: subText.trim(),
+            };
 
-        paragraphs.push({
-          text: blockText.trim(),
-          type: para.type,
-          pageIdx: (para.page || 1) - 1,
-          sourceBlocks: [blockRef],
-        });
+            paragraphs.push({
+              text: subText.trim(),
+              type: subBlock.type || para.type,
+              pageIdx: (para.page || 1) - 1,
+              sourceBlocks: [blockRef],
+            });
+          }
+        }
+      } else {
+        const blockText = extractBlockText(para);
+        if (blockText) {
+          const blockRef: BlockReference = {
+            blockIdx: para.index || 0,
+            pageIdx: (para.page || 1) - 1,
+            bbox: para.bbox || [0, 0, 0, 0],
+            pageSize: [612, 792],
+            text: blockText.trim(),
+          };
+
+          paragraphs.push({
+            text: blockText.trim(),
+            type: para.type,
+            pageIdx: (para.page || 1) - 1,
+            sourceBlocks: [blockRef],
+          });
+        }
       }
     }
+
 
     console.log(`Parsed ${paragraphs.length} paragraphs from normalized format`);
     return mergeCrossPageParagraphs(paragraphs);
   }
 
-  // Fall back to raw MinerU format (pdf_info)
+  // Handle raw MinerU format (pdf_info)
   const pages: PageInfo[] = json.pdf_info || [];
   const paragraphs: Paragraph[] = [];
+  const allBlocks: { block: Block; pageIdx: number }[] = [];
 
+  // Step 1: Flatten all blocks across all pages into a single array
+  // This ensures that even if page data is slightly out of order, we process it sequentially by page
   for (const page of pages) {
     const pageIdx = page.page_idx;
-    const pageSize = page.page_size || [612, 792];
     const blocks = page.para_blocks || [];
-
-    for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
-      const block = blocks[blockIdx]!;
-      const blockText = extractBlockText(block);
-
-      // Create block reference for visual annotation
-      const blockRef: BlockReference = {
-        blockIdx,
-        pageIdx,
-        bbox: block.bbox || [0, 0, 0, 0],
-        pageSize: pageSize as [number, number],
-        text: blockText.trim(),
-      };
-
-      // Handle nested blocks (like lists)
-      if (block.blocks) {
-        for (const subBlock of block.blocks) {
-          const subText = extractBlockText(subBlock);
-          if (subText) {
-            // For nested blocks, use parent block's bbox as reference
-            paragraphs.push({
-              text: subText.trim(),
-              type: subBlock.type || block.type,
-              pageIdx: pageIdx,
-              sourceBlocks: [blockRef],
-            });
-          }
-        }
-      } else if (blockText) {
-        paragraphs.push({
-          text: blockText.trim(),
-          type: block.type,
-          pageIdx: pageIdx,
-          sourceBlocks: [blockRef],
-        });
-      }
+    for (const block of blocks) {
+      allBlocks.push({ block, pageIdx });
     }
   }
+
+  // Step 2: Sort all blocks by page index and then by block index (if available) or their natural order
+  // This defends against API returning pages or blocks out of order
+  allBlocks.sort((a, b) => {
+    if (a.pageIdx !== b.pageIdx) return a.pageIdx - b.pageIdx;
+    // If blocks have explicit index, use it. Otherwise rely on stable sort/original order
+    if (a.block.index !== undefined && b.block.index !== undefined) {
+      return a.block.index - b.block.index;
+    }
+    return 0; 
+  });
+
+  // Step 3: Process sorted blocks
+  for (const { block, pageIdx } of allBlocks) {
+    // Find corresponding page info for page size
+    const pageInfo = pages.find(p => p.page_idx === pageIdx);
+    const pageSize = pageInfo?.page_size || [612, 792];
+
+    const blockText = extractBlockText(block);
+
+    // Create block reference for visual annotation
+    const blockRef: BlockReference = {
+      blockIdx: block.index || 0, // Use 0 if index is missing
+      pageIdx,
+      bbox: block.bbox || [0, 0, 0, 0],
+      pageSize: pageSize as [number, number],
+      text: blockText.trim(),
+    };
+
+    // Handle nested blocks (like lists)
+    if (block.blocks && block.blocks.length > 0) {
+      for (const subBlock of block.blocks) {
+        const subText = extractBlockText(subBlock);
+        if (subText) {
+          // For nested blocks, use parent block's bbox as reference
+          paragraphs.push({
+            text: subText.trim(),
+            type: subBlock.type || block.type,
+            pageIdx: pageIdx,
+            sourceBlocks: [blockRef],
+          });
+        }
+      }
+    } else if (blockText) {
+      paragraphs.push({
+        text: blockText.trim(),
+        type: block.type,
+        pageIdx: pageIdx,
+        sourceBlocks: [blockRef],
+      });
+    }
+  }
+
 
   // Merge cross-page split paragraphs
   return mergeCrossPageParagraphs(paragraphs);

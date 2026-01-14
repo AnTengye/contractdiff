@@ -21,6 +21,9 @@ export interface NormalizationOptions {
   // Special characters
   removeInvisibleChars?: boolean;         // Remove zero-width spaces, etc.
   normalizeNumberFormats?: boolean;       // Normalize number separators
+  
+  // Aggressive Normalization (match legacy behavior)
+  stripAllWhitespace?: boolean;           // Remove ALL whitespace (spaces, tabs, newlines)
 }
 
 export const DEFAULT_NORMALIZATION_OPTIONS: NormalizationOptions = {
@@ -33,7 +36,8 @@ export const DEFAULT_NORMALIZATION_OPTIONS: NormalizationOptions = {
   normalizeDashes: true,
   caseSensitive: true,
   removeInvisibleChars: true,
-  normalizeNumberFormats: false,  // Keep numbers as-is by default
+  normalizeNumberFormats: false,
+  stripAllWhitespace: false, // Disabled by default, enable for OCR matching
 };
 
 /**
@@ -41,6 +45,11 @@ export const DEFAULT_NORMALIZATION_OPTIONS: NormalizationOptions = {
  */
 export function normalizeText(text: string, options: NormalizationOptions = DEFAULT_NORMALIZATION_OPTIONS): string {
   let normalized = text;
+  
+  // Strip all whitespace (Aggressive Mode)
+  if (options.stripAllWhitespace) {
+    normalized = normalized.replace(/\s+/g, '');
+  }
   
   // Remove invisible characters (zero-width spaces, soft hyphens, etc.)
   if (options.removeInvisibleChars) {

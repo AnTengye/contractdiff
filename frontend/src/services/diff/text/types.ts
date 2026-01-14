@@ -24,6 +24,8 @@ export interface CharacterDiff {
   diffs: DiffTuple[];
   hasDiff: boolean;
   similarity: number;
+  /** Whether this diff was reconciled by post-processing (paragraph boundary fix) */
+  reconciled?: boolean;
 }
 
 /**
