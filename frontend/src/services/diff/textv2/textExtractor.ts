@@ -7,6 +7,9 @@ import type {
   TextSegment,
 } from './types';
 
+// Default page size (A4 at 72 DPI) - used when page_size is not available
+const DEFAULT_PAGE_SIZE: [number, number] = [595, 842];
+
 /**
  * Extract all text from a contract document
  * Returns concatenated text and segment mapping for position tracking
@@ -18,6 +21,9 @@ export function extractText(data: ContractData): {
   const segments: TextSegment[] = [];
   let currentOffset = 0;
 
+  // Build page size map from pdf_info if available
+  const pageSizeMap = buildPageSizeMap(data);
+
   // Handle normalized format (paragraphs array)
   if (data.paragraphs && Array.isArray(data.paragraphs)) {
     console.log('[TextExtractor] Using normalized format, blocks:', data.paragraphs.length);
@@ -25,8 +31,9 @@ export function extractText(data: ContractData): {
     for (let blockIdx = 0; blockIdx < data.paragraphs.length; blockIdx++) {
       const block = data.paragraphs[blockIdx]!;
       const pageIdx = (block.page || 1) - 1; // Convert to 0-indexed
+      const pageSize = pageSizeMap.get(pageIdx) || DEFAULT_PAGE_SIZE;
       
-      const extracted = extractBlockSegments(block, pageIdx, blockIdx, currentOffset);
+      const extracted = extractBlockSegments(block, pageIdx, blockIdx, currentOffset, pageSize);
       segments.push(...extracted.segments);
       currentOffset = extracted.nextOffset;
     }
@@ -43,7 +50,7 @@ export function extractText(data: ContractData): {
     
     for (const page of sortedPages) {
       const pageIdx = page.page_idx;
-      const pageSize = page.page_size || [612, 792];
+      const pageSize = (page.page_size || DEFAULT_PAGE_SIZE) as [number, number];
       const blocks = page.para_blocks || [];
       
       for (const block of blocks) {
@@ -52,7 +59,7 @@ export function extractText(data: ContractData): {
           pageIdx, 
           globalBlockIdx, 
           currentOffset,
-          pageSize as [number, number]
+          pageSize
         );
         segments.push(...extracted.segments);
         currentOffset = extracted.nextOffset;
@@ -67,6 +74,23 @@ export function extractText(data: ContractData): {
   console.log(`[TextExtractor] Extracted ${segments.length} segments, total chars: ${fullText.length}`);
   
   return { fullText, segments };
+}
+
+/**
+ * Build a map of page index to page size from pdf_info
+ */
+function buildPageSizeMap(data: ContractData): Map<number, [number, number]> {
+  const map = new Map<number, [number, number]>();
+  
+  if (data.pdf_info && Array.isArray(data.pdf_info)) {
+    for (const page of data.pdf_info) {
+      if (page.page_size) {
+        map.set(page.page_idx, page.page_size as [number, number]);
+      }
+    }
+  }
+  
+  return map;
 }
 
 /**

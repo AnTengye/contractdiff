@@ -1,7 +1,13 @@
 // PDF Viewer component - displays PDF pages
 
-import { pdfStore, pdfActions, contractStore } from '@/store';
+import { pdfStore, pdfActions, contractStore, diffStore } from '@/store';
 import { loadPdfDocument, renderAllPages } from '@/services/document/pdf';
+import {
+  renderHighlights,
+  updateCurrentHighlight,
+  scrollToHighlight,
+  clearHighlights,
+} from '@/services/document/pdfHighlight';
 import { getRequiredElement, hide, show } from '@/utils/dom';
 
 export class PdfViewerV2 {
@@ -13,6 +19,7 @@ export class PdfViewerV2 {
     filename: HTMLElement;
   };
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeDiff: (() => void) | null = null;
 
   constructor(side: 'left' | 'right') {
     this.side = side;
@@ -54,6 +61,54 @@ export class PdfViewerV2 {
         this.rerender();
       }
     });
+
+    // Subscribe to diff store for highlight updates
+    this.unsubscribeDiff = diffStore.subscribe((state, prevState) => {
+      // Check if diff result changed (new comparison)
+      if (state.textDiffResult !== prevState.textDiffResult && state.textDiffResult) {
+        console.log(`[PdfViewer ${this.side}] Diff result changed, rendering highlights`);
+        this.renderDiffHighlights(state.currentDiffIndex);
+      }
+      // Check if current diff index changed (navigation)
+      else if (state.currentDiffIndex !== prevState.currentDiffIndex) {
+        this.handleDiffIndexChange(state.currentDiffIndex, prevState.currentDiffIndex);
+      }
+    });
+  }
+
+  /**
+   * Render diff highlights on PDF overlay
+   */
+  private renderDiffHighlights(currentDiffIndex: number): void {
+    const diffResult = diffStore.getState().textDiffResult;
+    if (!diffResult) {
+      clearHighlights(this.side);
+      return;
+    }
+
+    const sideResult = this.side === 'left' ? diffResult.left : diffResult.right;
+    
+    // Wait a bit for PDF pages to be fully rendered
+    setTimeout(() => {
+      renderHighlights(sideResult.segments, this.side, currentDiffIndex);
+      
+      // Scroll to current diff if there is one
+      if (currentDiffIndex >= 0) {
+        scrollToHighlight(this.side, currentDiffIndex);
+      }
+    }, 100);
+  }
+
+  /**
+   * Handle diff index change (navigation between diffs)
+   */
+  private handleDiffIndexChange(newIndex: number, oldIndex: number): void {
+    updateCurrentHighlight(this.side, newIndex, oldIndex);
+    
+    // Scroll to the new current diff
+    if (newIndex >= 0) {
+      scrollToHighlight(this.side, newIndex);
+    }
   }
 
   private async loadPdf(url: string): Promise<void> {
@@ -99,11 +154,20 @@ export class PdfViewerV2 {
 
     const zoomLevel = pdfStore.getState().zoomLevel;
     await renderAllPages(pdfDoc, this.elements.pagesContainer, this.side, zoomLevel);
+    
+    // Re-render highlights after PDF re-render (e.g., after zoom change)
+    const diffState = diffStore.getState();
+    if (diffState.textDiffResult) {
+      this.renderDiffHighlights(diffState.currentDiffIndex);
+    }
   }
 
   destroy(): void {
     if (this.unsubscribe) {
       this.unsubscribe();
+    }
+    if (this.unsubscribeDiff) {
+      this.unsubscribeDiff();
     }
   }
 }

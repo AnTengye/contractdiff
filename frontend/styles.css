@@ -948,6 +948,31 @@ body {
     stroke-width: 2;
 }
 
+/* Current highlight - pulsing animation for navigation */
+.highlight-current {
+    stroke-width: 3;
+    animation: highlightPulse 1.5s ease-in-out infinite;
+}
+
+.highlight-added.highlight-current {
+    fill: rgba(34, 197, 94, 0.5);
+    stroke: rgba(16, 185, 129, 1);
+}
+
+.highlight-removed.highlight-current {
+    fill: rgba(239, 68, 68, 0.5);
+    stroke: rgba(220, 38, 38, 1);
+}
+
+@keyframes highlightPulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}
+
 /* DOCX Rendering */
 .docx-page-wrapper {
     background: white;

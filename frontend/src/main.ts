@@ -111,11 +111,19 @@ async function init(): Promise<void> {
     setupSyncScroll(pdfLeft, pdfRight);
   }
 
-  // Expose logout function globally
+// Expose logout function globally
   (window as unknown as { logout: () => void }).logout = () => {
     clearAuth();
     redirectToLogin();
   };
+
+  // Expose test functions for debugging
+  import('@/tests/testPdfHighlight').then(module => {
+    (window as any).testPdfHighlight = module.runAllTests;
+    console.log('Test function available: window.testPdfHighlight()');
+  }).catch(() => {
+    // Ignore if test module not available
+  });
 
   console.log('ContractDiff initialized');
 }

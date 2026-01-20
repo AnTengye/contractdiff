@@ -20,8 +20,6 @@ export class Store<T extends object> {
 
     this.state = { ...this.state, ...partial };
 
-    console.log('[Store] State updated, notifying', this.listeners.size, 'listeners');
-
     // Notify global listeners
     this.listeners.forEach(listener => {
       try {
