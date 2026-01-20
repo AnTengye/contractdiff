@@ -1,3 +1,3 @@
 // Re-export viewer components
-export { DiffPane } from './DiffPaneV2';
+export { DiffPaneV3 as DiffPane } from './DiffPaneV3';
 export { PdfViewer, setupZoomControls } from './PdfViewerV2';

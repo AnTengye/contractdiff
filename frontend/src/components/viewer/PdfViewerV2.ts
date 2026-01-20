@@ -1,12 +1,8 @@
-// PDF Viewer V2 component - supports new visual annotations
+// PDF Viewer component - displays PDF pages
 
 import { pdfStore, pdfActions, contractStore } from '@/store';
 import { loadPdfDocument, renderAllPages } from '@/services/document/pdf';
-import { prepareAnnotations, drawAnnotationsOnOverlay } from '@/features/comparison';
 import { getRequiredElement, hide, show } from '@/utils/dom';
-import { COLORS } from '@/constants';
-import type { Annotations } from '@/types';
-import type { VisualAnnotation } from '@/services/diff/visual';
 
 export class PdfViewerV2 {
   private side: 'left' | 'right';
@@ -52,30 +48,10 @@ export class PdfViewerV2 {
       this.loadPdf(currentState.pdfUrl);
     }
 
-    // Subscribe to PDF store for zoom and annotation changes
+    // Subscribe to PDF store for zoom changes
     this.unsubscribe = pdfStore.subscribe((state, prevState) => {
       if (state.zoomLevel !== prevState.zoomLevel) {
         this.rerender();
-      }
-
-      // Check if new visual annotations changed
-      const visualAnnotations = this.side === 'left' 
-        ? state.leftVisualAnnotations 
-        : state.rightVisualAnnotations;
-      const prevVisualAnnotations = this.side === 'left' 
-        ? prevState.leftVisualAnnotations 
-        : prevState.rightVisualAnnotations;
-      
-      if (visualAnnotations !== prevVisualAnnotations) {
-        this.drawVisualAnnotations(visualAnnotations);
-        return;
-      }
-
-      // Fall back to legacy annotations
-      const annotations = this.side === 'left' ? state.leftAnnotations : state.rightAnnotations;
-      const prevAnnotations = this.side === 'left' ? prevState.leftAnnotations : prevState.rightAnnotations;
-      if (annotations !== prevAnnotations) {
-        this.drawLegacyAnnotations(annotations);
       }
     });
   }
@@ -108,9 +84,6 @@ export class PdfViewerV2 {
       await this.rerender();
 
       filename.textContent = '✓ PDF 已加载';
-
-      // Prepare and draw annotations if we have diff results
-      prepareAnnotations();
     } catch (err) {
       console.error(`Failed to load PDF for ${this.side}:`, err);
       placeholder.classList.remove('loading');
@@ -126,109 +99,6 @@ export class PdfViewerV2 {
 
     const zoomLevel = pdfStore.getState().zoomLevel;
     await renderAllPages(pdfDoc, this.elements.pagesContainer, this.side, zoomLevel);
-
-    // Redraw annotations (try visual first, then legacy)
-    const visualAnnotations = this.side === 'left'
-      ? pdfStore.getState().leftVisualAnnotations
-      : pdfStore.getState().rightVisualAnnotations;
-    
-    if (visualAnnotations.size > 0) {
-      this.drawVisualAnnotations(visualAnnotations);
-    } else {
-      const legacyAnnotations = this.side === 'left'
-        ? pdfStore.getState().leftAnnotations
-        : pdfStore.getState().rightAnnotations;
-      this.drawLegacyAnnotations(legacyAnnotations);
-    }
-  }
-
-  /**
-   * Draw new visual annotations
-   */
-  private drawVisualAnnotations(annotationsMap: Map<number, VisualAnnotation[]>): void {
-    const zoomLevel = pdfStore.getState().zoomLevel;
-
-    for (const [pageIdx, annotations] of annotationsMap.entries()) {
-      const pageNum = pageIdx + 1;
-      const overlay = document.getElementById(`pdf-overlay-${this.side}-page-${pageNum}`) as unknown as SVGSVGElement | null;
-
-      if (overlay && annotations) {
-        this.drawVisualAnnotationsOnOverlay(overlay, annotations, zoomLevel);
-      }
-    }
-  }
-
-  /**
-   * Draw visual annotations on SVG overlay
-   */
-  private drawVisualAnnotationsOnOverlay(
-    overlay: SVGSVGElement,
-    annotations: VisualAnnotation[],
-    scale: number
-  ): void {
-    // Clear existing annotations
-    overlay.innerHTML = '';
-
-    for (const annotation of annotations) {
-      const [x0, y0, x1, y1] = annotation.bbox;
-      const [, pageHeight] = annotation.pageSize;
-
-      // Convert from PDF coordinates (bottom-left origin) to SVG (top-left origin)
-      const x = x0 * scale;
-      const y = (pageHeight - y1) * scale;
-      const width = (x1 - x0) * scale;
-      const height = (y1 - y0) * scale;
-
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('x', String(x));
-      rect.setAttribute('y', String(y));
-      rect.setAttribute('width', String(width));
-      rect.setAttribute('height', String(height));
-
-      // Select colors based on annotation type
-      let colors;
-      switch (annotation.type) {
-        case 'added':
-          colors = COLORS.ADDED;
-          break;
-        case 'removed':
-          colors = COLORS.REMOVED;
-          break;
-        case 'modified':
-          colors = COLORS.MODIFIED;
-          break;
-        default:
-          colors = COLORS.REMOVED;
-      }
-
-      rect.setAttribute('fill', colors.FILL);
-      rect.setAttribute('stroke', colors.STROKE);
-      rect.setAttribute('stroke-width', '1');
-
-      // Store metadata
-      rect.dataset.diffIndex = String(annotation.diffIndex);
-      rect.dataset.charStart = String(annotation.charStart);
-      rect.dataset.charEnd = String(annotation.charEnd);
-
-      overlay.appendChild(rect);
-    }
-  }
-
-  /**
-   * Draw legacy annotations (for backward compatibility)
-   */
-  private drawLegacyAnnotations(annotations: Annotations): void {
-    const zoomLevel = pdfStore.getState().zoomLevel;
-
-    for (const [pageIdxStr, pageAnnotations] of Object.entries(annotations)) {
-      const pageIdx = parseInt(pageIdxStr, 10);
-      const pageNum = pageIdx + 1;
-      const overlay = document.getElementById(`pdf-overlay-${this.side}-page-${pageNum}`) as unknown as SVGSVGElement | null;
-
-      if (overlay && pageAnnotations) {
-        drawAnnotationsOnOverlay(overlay, pageAnnotations, zoomLevel);
-      }
-    }
   }
 
   destroy(): void {
@@ -241,7 +111,7 @@ export class PdfViewerV2 {
 // Export as PdfViewer for compatibility
 export { PdfViewerV2 as PdfViewer };
 
-// Zoom controls (unchanged)
+// Zoom controls
 export function setupZoomControls(): void {
   const zoomInBtn = document.getElementById('zoom-in');
   const zoomOutBtn = document.getElementById('zoom-out');

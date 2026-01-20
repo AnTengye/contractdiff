@@ -1,6 +1,7 @@
 // Re-export comparison feature
-export { runComparison, getDiffResults, resetComparison } from './runComparison';
-export { prepareAnnotations, drawAnnotationsOnOverlay } from './annotations';
+export { runComparisonV3, getComparisonResultV3, resetComparisonV3 } from './comparisonV3';
 
-// New V2 comparison engine
-export { runComparisonV2, getComparisonResult, resetComparisonV2 } from './comparisonV2';
+// Alias for simpler usage
+export { runComparisonV3 as runComparison } from './comparisonV3';
+export { getComparisonResultV3 as getComparisonResult } from './comparisonV3';
+export { resetComparisonV3 as resetComparison } from './comparisonV3';

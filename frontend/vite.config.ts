@@ -15,7 +15,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'pdf': ['pdfjs-dist'],
-          'diff': ['diff-match-patch'],
+          'diff': ['diff'],
           'docx': ['mammoth'],
         },
       },
@@ -48,6 +48,6 @@ export default defineConfig({
   },
 
   optimizeDeps: {
-    include: ['pdfjs-dist', 'diff-match-patch', 'mammoth'],
+    include: ['pdfjs-dist', 'diff', 'mammoth'],
   },
 });

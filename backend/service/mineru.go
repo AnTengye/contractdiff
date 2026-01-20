@@ -64,7 +64,7 @@ func GetMineruErrorMessage(err error) string {
 		default:
 			// Check if it's an auth error by message
 			if mineruErr.IsAuthError {
-				return "解析工具认证失败，请检查 Token 是否有效或已过期"
+				return "解析工具 Token 已过期，请更新 Token"
 			}
 			return mineruErr.Message
 		}
@@ -72,8 +72,8 @@ func GetMineruErrorMessage(err error) string {
 	return err.Error()
 }
 
-// parseMineruError creates a structured error from API response
-func parseMineruError(code interface{}, message string) *MineruAPIError {
+// ParseMineruError creates a structured error from API response
+func ParseMineruError(code interface{}, message string) *MineruAPIError {
 	err := &MineruAPIError{
 		Code:    code,
 		Message: message,
@@ -229,7 +229,7 @@ func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, 
 	}
 
 	if !isSuccessCode(result.Code) {
-		return nil, parseMineruError(parseCodeValue(result.Code), result.Message)
+		return nil, ParseMineruError(parseCodeValue(result.Code), result.Message)
 	}
 
 	return &result, nil
@@ -268,7 +268,7 @@ func (s *MineruService) GetTaskStatus(taskID string) (*MineruTaskStatusResponse,
 	}
 
 	if !isSuccessCode(result.Code) {
-		return nil, parseMineruError(parseCodeValue(result.Code), result.Message)
+		return nil, ParseMineruError(parseCodeValue(result.Code), result.Message)
 	}
 
 	return &result, nil

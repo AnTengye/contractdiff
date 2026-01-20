@@ -151,6 +151,17 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 	// Check for duplicate files in the same tenant
 	existingContract := h.store.FindByHash(tenant, fileHash)
+
+	// If the existing contract failed, we should not return it as a cached result.
+	// Instead, we should allow re-processing.
+	if existingContract != nil && existingContract.Status == model.StatusFailed {
+		slog.Info("found existing contract but it failed, ignoring cache to allow retry",
+			"request_id", requestID,
+			"existing_contract_id", existingContract.ID,
+			"file_hash", fileHash)
+		existingContract = nil
+	}
+
 	if existingContract != nil {
 		// File already exists - return existing result instead of reprocessing
 		slog.Info("duplicate file detected, returning existing contract",

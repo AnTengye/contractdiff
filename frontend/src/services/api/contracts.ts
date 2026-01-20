@@ -177,13 +177,20 @@ export async function pollForResult(
       }
 
       if (status.status === 'failed') {
-        throw new Error(status.error || 'Processing failed');
+        const error = new Error(status.error || 'Processing failed');
+        (error as any).isPermanent = true;
+        throw error;
       }
 
       // Wait before next poll
       await new Promise(resolve => setTimeout(resolve, currentInterval));
     } catch (error) {
       if (error instanceof Error && error.message === 'Cancelled') {
+        throw error;
+      }
+
+      // Re-throw permanent errors to stop polling
+      if (error && (error as any).isPermanent) {
         throw error;
       }
 

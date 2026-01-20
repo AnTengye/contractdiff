@@ -1,6 +1,6 @@
 // Main application entry point
 import { UploadCard, DiffPane, PdfViewer, StatsPanel, setupZoomControls } from '@/components';
-import { runComparisonV2 } from '@/features/comparison';
+import { runComparisonV3 } from '@/features/comparison';
 import { setupSyncScroll } from '@/features/sync';
 import { DiffNavigation } from '@/features/navigation/diffNavigation';
 import { contractStore, selectCanCompare, uiStore } from '@/store';
@@ -78,8 +78,8 @@ async function init(): Promise<void> {
   const compareBtn = getRequiredElement('compare-btn');
 
   compareBtn.addEventListener('click', () => {
-    // Use new V2 comparison engine
-    runComparisonV2();
+    // Use new V3 jsdiff-based comparison engine
+    runComparisonV3();
   });
 
   // Update compare button state based on data availability

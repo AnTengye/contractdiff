@@ -72,6 +72,15 @@ func (p *MineruParser) GetTaskStatus(ctx context.Context, taskID string) (*TaskS
 		ErrorMessage: status.Data.ErrorMsg,
 	}
 
+	// Try to provide a user-friendly error message if available
+	if status.Data.ErrorMsg != "" {
+		// Create a structured error object from the raw message
+		// We pass nil for code since we might not have it here, but ParseMineruError checks message content too
+		errObj := service.ParseMineruError(nil, status.Data.ErrorMsg)
+		// Get friendly message
+		taskStatus.ErrorMessage = service.GetMineruErrorMessage(errObj)
+	}
+
 	// Add progress info if available
 	if status.Data.ExtractProgress.TotalPages > 0 {
 		taskStatus.Progress = &ProgressInfo{

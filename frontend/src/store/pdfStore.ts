@@ -1,28 +1,18 @@
 // PDF store - manages PDF viewer state
 import { Store } from './Store';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import type { Annotations } from '@/types';
-import type { VisualAnnotation } from '@/services/diff/visual';
 import { ZOOM } from '@/constants';
 
 interface PdfState {
   leftDoc: PDFDocumentProxy | null;
   rightDoc: PDFDocumentProxy | null;
   zoomLevel: number;
-  leftAnnotations: Annotations;
-  rightAnnotations: Annotations;
-  leftVisualAnnotations: Map<number, VisualAnnotation[]>;
-  rightVisualAnnotations: Map<number, VisualAnnotation[]>;
 }
 
 const initialState: PdfState = {
   leftDoc: null,
   rightDoc: null,
   zoomLevel: ZOOM.DEFAULT,
-  leftAnnotations: {},
-  rightAnnotations: {},
-  leftVisualAnnotations: new Map(),
-  rightVisualAnnotations: new Map(),
 };
 
 export const pdfStore = new Store(initialState);
@@ -50,20 +40,6 @@ export const pdfActions = {
   changeZoom(delta: number) {
     const current = pdfStore.getState().zoomLevel;
     pdfActions.setZoom(current + delta);
-  },
-
-  setAnnotations(left: Annotations, right: Annotations) {
-    pdfStore.setState({ leftAnnotations: left, rightAnnotations: right });
-  },
-
-  setVisualAnnotations(
-    left: Map<number, VisualAnnotation[]>,
-    right: Map<number, VisualAnnotation[]>
-  ) {
-    pdfStore.setState({
-      leftVisualAnnotations: left,
-      rightVisualAnnotations: right,
-    });
   },
 
   reset() {
