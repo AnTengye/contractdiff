@@ -48,7 +48,7 @@ export async function uploadContract(
   const formData = new FormData();
   formData.append('file', file);
   if (parserId) {
-    formData.append('parser_id', parserId);
+    formData.append('parser_type', parserId);
   }
 
   const response = await fetch(API_ENDPOINTS.CONTRACTS_UPLOAD, {

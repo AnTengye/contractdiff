@@ -44,7 +44,7 @@ func RequestLogger() gin.HandlerFunc {
 		case status >= 400:
 			slog.Warn("request completed", attrs...)
 		default:
-			slog.Info("request completed", attrs...)
+			slog.Debug("request completed", attrs...)
 		}
 	}
 }

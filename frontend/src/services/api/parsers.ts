@@ -8,8 +8,18 @@ export interface Parser {
   description?: string;
 }
 
+// Backend response format from ParserCapabilities
+interface BackendParser {
+  type: string;
+  name: string;
+  description?: string;
+  supported_formats?: string[];
+  max_file_size?: number;
+  features?: string[];
+}
+
 interface ParsersResponse {
-  parsers: Parser[];
+  parsers: BackendParser[];
 }
 
 /**
@@ -34,5 +44,10 @@ export async function getParsers(): Promise<Parser[]> {
   }
 
   const data: ParsersResponse = await response.json();
-  return data.parsers || [];
+  // Map backend format (type) to frontend format (id)
+  return (data.parsers || []).map((p) => ({
+    id: p.type,
+    name: p.name,
+    description: p.description,
+  }));
 }

@@ -1,6 +1,6 @@
 // PDF Viewer component - displays PDF pages
 
-import { pdfStore, pdfActions, contractStore, diffStore } from '@/store';
+import { pdfStore, pdfActions, contractStore, diffStore, uiStore, uiActions } from '@/store';
 import { loadPdfDocument, renderAllPages } from '@/services/document/pdf';
 import {
   renderHighlights,
@@ -25,6 +25,7 @@ export class PdfViewerV2 {
     this.side = side;
     this.elements = this.initElements();
     this.subscribeToStore();
+    this.initScrollListener();
   }
 
   private initElements() {
@@ -79,7 +80,7 @@ export class PdfViewerV2 {
   /**
    * Render diff highlights on PDF overlay
    */
-  private renderDiffHighlights(currentDiffIndex: number): void {
+  private async renderDiffHighlights(currentDiffIndex: number): Promise<void> {
     const diffResult = diffStore.getState().textDiffResult;
     if (!diffResult) {
       clearHighlights(this.side);
@@ -87,11 +88,11 @@ export class PdfViewerV2 {
     }
 
     const sideResult = this.side === 'left' ? diffResult.left : diffResult.right;
-    
+
     // Wait a bit for PDF pages to be fully rendered
-    setTimeout(() => {
-      renderHighlights(sideResult.segments, this.side, currentDiffIndex);
-      
+    setTimeout(async () => {
+      await renderHighlights(sideResult.segments, this.side, currentDiffIndex);
+
       // Scroll to current diff if there is one
       if (currentDiffIndex >= 0) {
         scrollToHighlight(this.side, currentDiffIndex);
@@ -104,7 +105,7 @@ export class PdfViewerV2 {
    */
   private handleDiffIndexChange(newIndex: number, oldIndex: number): void {
     updateCurrentHighlight(this.side, newIndex, oldIndex);
-    
+
     // Scroll to the new current diff
     if (newIndex >= 0) {
       scrollToHighlight(this.side, newIndex);
@@ -154,7 +155,7 @@ export class PdfViewerV2 {
 
     const zoomLevel = pdfStore.getState().zoomLevel;
     await renderAllPages(pdfDoc, this.elements.pagesContainer, this.side, zoomLevel);
-    
+
     // Re-render highlights after PDF re-render (e.g., after zoom change)
     const diffState = diffStore.getState();
     if (diffState.textDiffResult) {
@@ -162,7 +163,48 @@ export class PdfViewerV2 {
     }
   }
 
+  private initScrollListener(): void {
+    this.elements.container.addEventListener('scroll', this.handleScroll);
+  }
+
+  private handleScroll = () => {
+    const { syncScrollEnabled, isSyncing } = uiStore.getState();
+    if (!syncScrollEnabled || isSyncing) return;
+
+    const myContainer = this.elements.container;
+    const otherSide = this.side === 'left' ? 'right' : 'left';
+    const otherContainer = document.getElementById(`pdf-viewer-${otherSide}`);
+
+    if (!otherContainer) return;
+
+    // Set syncing flag to prevent circular updates
+    uiActions.setIsSyncing(true);
+
+    // Calculate percentage
+    const maxScroll = myContainer.scrollHeight - myContainer.clientHeight;
+    if (maxScroll <= 0) {
+      uiActions.setIsSyncing(false);
+      return;
+    }
+
+    const percentage = myContainer.scrollTop / maxScroll;
+
+    // Apply to other container
+    const otherMaxScroll = otherContainer.scrollHeight - otherContainer.clientHeight;
+    if (otherMaxScroll > 0) {
+      otherContainer.scrollTop = percentage * otherMaxScroll;
+    }
+
+    // Release lock after a short delay
+    setTimeout(() => {
+      uiActions.setIsSyncing(false);
+    }, 50);
+  }
+
   destroy(): void {
+    if (this.elements.container) {
+      this.elements.container.removeEventListener('scroll', this.handleScroll);
+    }
     if (this.unsubscribe) {
       this.unsubscribe();
     }
