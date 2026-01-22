@@ -105,6 +105,8 @@ function buildPageSizeMap(data: ContractData): Map<number, [number, number]> {
 /**
  * Extract text segments from a single block
  */
+const IGNORED_BLOCK_TYPES = new Set(['header', 'footer', 'page_header', 'page_footer', 'page_number']);
+
 function extractBlockSegments(
   block: Block,
   pageIdx: number,
@@ -114,6 +116,10 @@ function extractBlockSegments(
 ): { segments: TextSegment[]; nextOffset: number } {
   const segments: TextSegment[] = [];
   let currentOffset = startOffset;
+  
+  if (block.type && IGNORED_BLOCK_TYPES.has(block.type)) {
+    return { segments, nextOffset: currentOffset };
+  }
   
   // Handle nested blocks first (like lists)
   if (block.blocks && block.blocks.length > 0) {

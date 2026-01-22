@@ -575,6 +575,83 @@ body {
     border-radius: 50px;
 }
 
+/* Inline Diff Stats */
+.diff-stats-inline {
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-top: 1.5rem;
+    padding: 1rem 2rem;
+    background: var(--bg-glass);
+    border-radius: 50px;
+    border: 1px solid var(--border-color);
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.stats-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.stats-badge .stats-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 1rem;
+}
+
+.stats-badge.total .stats-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.stats-badge.total .stats-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.stats-badge.added .stats-icon {
+    background: rgba(16, 185, 129, 0.2);
+    color: #4ade80;
+}
+
+.stats-badge.added .stats-value {
+    color: #4ade80;
+    font-weight: 600;
+}
+
+.stats-badge.removed .stats-icon {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+}
+
+.stats-badge.removed .stats-value {
+    color: #f87171;
+    font-weight: 600;
+}
+
+.stats-badge .stats-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
 /* ===== Stats Ribbon (Pro Max) ===== */
 .stats-ribbon {
     position: sticky;

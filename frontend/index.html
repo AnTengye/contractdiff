@@ -155,6 +155,24 @@
                             开始智能比对
                         </button>
                     </div>
+
+                    <!-- Diff Stats Summary (shown after comparison) -->
+                    <div class="diff-stats-inline" id="diff-stats-inline" style="display: none;">
+                        <div class="stats-badge total">
+                            <span class="stats-label">差异总数</span>
+                            <span class="stats-value" id="inline-stat-total">0</span>
+                        </div>
+                        <div class="stats-badge added">
+                            <span class="stats-icon">+</span>
+                            <span class="stats-value" id="inline-stat-added">0</span>
+                            <span class="stats-label">新增</span>
+                        </div>
+                        <div class="stats-badge removed">
+                            <span class="stats-icon">−</span>
+                            <span class="stats-value" id="inline-stat-removed">0</span>
+                            <span class="stats-label">删除</span>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- PDF Section (Primary View) -->
@@ -238,56 +256,6 @@
                     </div>
                 </section>
             </div>
-
-            <!-- Right Sidebar -->
-            <aside class="workspace-sidebar">
-                <div class="sidebar-header glass-panel">
-                    <h3>比对结果</h3>
-                    <div class="similarity-score">
-                        <span class="score-label">相似度</span>
-                        <span class="score-value">--%</span>
-                    </div>
-                </div>
-
-                <div class="stats-summary glass-panel" id="stats-section">
-                    <div class="stat-row">
-                        <span class="stat-label">总差异点</span>
-                        <span class="stat-value highlight" id="stat-total">0</span>
-                    </div>
-                    <div class="stat-grid">
-                        <div class="tiny-stat added">
-                            <span class="label">新增</span>
-                            <span class="value" id="stat-added">0</span>
-                        </div>
-                        <div class="tiny-stat removed">
-                            <span class="label">删除</span>
-                            <span class="value" id="stat-removed">0</span>
-                        </div>
-                        <div class="tiny-stat modified">
-                            <span class="label">修改</span>
-                            <span class="value" id="stat-modified">0</span>
-                        </div>
-                    </div>
-                    <div class="unmapped-notice" id="unmapped-notice" style="display: none;">
-                        <span id="unmapped-count">0</span> 个差异无法定位到原件
-                    </div>
-                </div>
-
-                <div class="diff-list-container glass-panel">
-                    <div class="list-header">
-                        <h4>差异列表</h4>
-                        <div class="filter-tabs">
-                            <span class="active">全部</span>
-                            <span>新增</span>
-                            <span>删除</span>
-                        </div>
-                    </div>
-                    <div class="diff-list-scroll-area" id="diff-list-content">
-                        <!-- Dynamic content populated by JS -->
-                        <div class="empty-state">暂无差异数据</div>
-                    </div>
-                </div>
-            </aside>
         </main>
 
         <footer style="margin-top: 3rem; text-align: center; color: var(--text-muted); padding: 1rem;">
