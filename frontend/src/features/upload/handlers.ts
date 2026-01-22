@@ -1,12 +1,16 @@
 // Upload feature - event handlers
 import { contractActions, contractStore } from '@/store';
-import { uploadContract, pollForResult } from '@/services/api';
+import { uploadContract, pollForResult, invalidateCache } from '@/services/api';
 import type { FileType, CancelToken } from '@/types';
 
 /**
  * Handle file upload for a side
  */
-export async function handleFileUpload(file: File, side: 'left' | 'right'): Promise<void> {
+export async function handleFileUpload(
+  file: File,
+  side: 'left' | 'right',
+  forceReprocess = false
+): Promise<void> {
   // Detect file type
   const fileType: FileType = file.name.toLowerCase().endsWith('.docx') ? 'docx' : 'pdf';
 
@@ -28,7 +32,7 @@ export async function handleFileUpload(file: File, side: 'left' | 'right'): Prom
     const parserId = parserSelector?.value || undefined;
 
     // Upload file
-    const uploadResult = await uploadContract(file, parserId);
+    const uploadResult = await uploadContract(file, parserId, forceReprocess);
 
     // Check cancellation after upload
     if (cancelToken.cancelled) {
@@ -36,10 +40,12 @@ export async function handleFileUpload(file: File, side: 'left' | 'right'): Prom
     }
 
     let result;
+    let isCached = false;
 
     // Check if this is a cached/duplicate upload - skip polling
     if (uploadResult.is_duplicate && uploadResult.status === 'completed') {
       contractActions.setUploadProgress(side, 90, '使用缓存结果...');
+      isCached = true;
 
       // Fetch the contract details directly since it's already processed
       const { getContractDetail } = await import('@/services/api');
@@ -56,8 +62,9 @@ export async function handleFileUpload(file: File, side: 'left' | 'right'): Prom
         pdfUrl: API_ENDPOINTS.CONTRACTS_PDF(uploadResult.id),
       };
     } else {
-      // Normal flow - poll for result
-      contractActions.setUploadProgress(side, 30, 'MinerU 处理中...');
+      const selectedOption = parserSelector?.options[parserSelector.selectedIndex];
+      const parserName = selectedOption?.text || '解析器';
+      contractActions.setUploadProgress(side, 30, `${parserName} 处理中...`);
 
       // Poll for result
       result = await pollForResult(
@@ -81,7 +88,8 @@ export async function handleFileUpload(file: File, side: 'left' | 'right'): Prom
       uploadResult.id,
       result.pdfUrl,
       fileType,
-      file.name
+      file.name,
+      isCached
     );
   } catch (error) {
     if (error instanceof Error && error.message === 'Cancelled') {
@@ -109,4 +117,32 @@ export function cancelUpload(side: 'left' | 'right'): void {
 export function canCompare(): boolean {
   const state = contractStore.getState();
   return state.left.data !== null && state.right.data !== null;
+}
+
+/**
+ * Reprocess a cached file by invalidating cache and re-uploading
+ */
+export async function reprocessFile(side: 'left' | 'right'): Promise<void> {
+  const state = contractStore.getState();
+  const sideState = state[side];
+
+  if (!sideState.contractId || !sideState.fileName) {
+    throw new Error('No file to reprocess');
+  }
+
+  // Invalidate cache first
+  await invalidateCache(sideState.contractId);
+
+  // Get the file input element to access the original file
+  const fileInput = document.getElementById(`file-${side}`) as HTMLInputElement | null;
+  const file = fileInput?.files?.[0];
+
+  if (!file) {
+    // Reset the side state and prompt user to re-select
+    contractActions.resetSide(side);
+    throw new Error('Please re-select the file to reprocess');
+  }
+
+  // Re-upload with force reprocess
+  await handleFileUpload(file, side, true);
 }

@@ -38,7 +38,8 @@ export interface PollResult {
  */
 export async function uploadContract(
   file: File,
-  parserId?: string
+  parserId?: string,
+  forceReprocess = false
 ): Promise<UploadResponse> {
   const token = getToken();
   if (!token) {
@@ -49,6 +50,9 @@ export async function uploadContract(
   formData.append('file', file);
   if (parserId) {
     formData.append('parser_type', parserId);
+  }
+  if (forceReprocess) {
+    formData.append('force_reprocess', 'true');
   }
 
   const response = await fetch(API_ENDPOINTS.CONTRACTS_UPLOAD, {
@@ -212,4 +216,23 @@ export async function pollForResult(
   }
 
   throw new Error(`Processing timeout after ${POLLING.TIMEOUT_MINUTES} minutes`);
+}
+
+export async function invalidateCache(contractId: string): Promise<void> {
+  const token = getToken();
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+
+  const response = await fetch(API_ENDPOINTS.CONTRACTS_CACHE(contractId), {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Failed to invalidate cache' }));
+    throw new Error(error.error || 'Failed to invalidate cache');
+  }
 }

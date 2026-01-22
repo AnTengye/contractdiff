@@ -182,6 +182,8 @@ func main() {
 		protected.GET("/contracts/:id/status", contractHandler.GetStatus)
 		protected.DELETE("/contracts/:id", contractHandler.Delete)
 		protected.GET("/contracts/:id/pdf", contractHandler.GetPDF)
+		protected.DELETE("/contracts/:id/cache", contractHandler.InvalidateCache)
+		protected.POST("/contracts/:id/renormalize", contractHandler.ReNormalize)
 	}
 
 	// Create server

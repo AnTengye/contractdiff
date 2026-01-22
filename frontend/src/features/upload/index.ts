@@ -1,2 +1,2 @@
 // Re-export upload feature
-export { handleFileUpload, cancelUpload, canCompare } from './handlers';
+export { handleFileUpload, cancelUpload, canCompare, reprocessFile } from './handlers';

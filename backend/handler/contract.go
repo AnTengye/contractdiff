@@ -15,6 +15,7 @@ import (
 
 	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/AnTengye/contractdiff/backend/model"
+	"github.com/AnTengye/contractdiff/backend/pkg/httpclient"
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/AnTengye/contractdiff/backend/service/converter"
 	"github.com/AnTengye/contractdiff/backend/service/parser"
@@ -27,6 +28,7 @@ type ContractHandler struct {
 	parserRegistry *parser.Registry
 	converter      *converter.GotenbergConverter
 	store          *service.ContractStore
+	httpClient     *httpclient.Client
 }
 
 func NewContractHandler(
@@ -39,6 +41,7 @@ func NewContractHandler(
 		parserRegistry: parserRegistry,
 		converter:      converter,
 		store:          service.GetContractStore(),
+		httpClient:     httpclient.New(),
 	}
 }
 
@@ -52,6 +55,9 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	if parserTypeStr == "" {
 		parserTypeStr = "mineru" // Default
 	}
+
+	// Check if force reprocess is requested
+	forceReprocess := c.PostForm("force_reprocess") == "true"
 
 	// Get file from form
 	file, header, err := c.Request.FormFile("file")
@@ -149,8 +155,11 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		"file_hash", fileHash,
 		"file_size", fileSize)
 
-	// Check for duplicate files in the same tenant
-	existingContract := h.store.FindByHash(tenant, fileHash)
+	// Check for duplicate files in the same tenant (skip if force reprocess)
+	var existingContract *model.Contract
+	if !forceReprocess {
+		existingContract = h.store.FindByHash(tenant, fileHash)
+	}
 
 	// If the existing contract failed, we should not return it as a cached result.
 	// Instead, we should allow re-processing.
@@ -199,9 +208,9 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		h.store.Save(duplicateContract)
 
 		c.JSON(http.StatusOK, gin.H{
-			"id":           duplicateContract.ID,
+			"id":           existingContract.ID,
 			"filename":     duplicateContract.Filename,
-			"status":       duplicateContract.Status,
+			"status":       existingContract.Status,
 			"is_duplicate": true,
 			"original_id":  existingContract.ID,
 			"message":      "File already processed, returning cached result",
@@ -612,7 +621,6 @@ func (h *ContractHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Contract deleted"})
 }
 
-// GetPDF proxies the PDF file to bypass CORS issues
 func (h *ContractHandler) GetPDF(c *gin.Context) {
 	tenant := middleware.GetTenant(c)
 	id := c.Param("id")
@@ -623,15 +631,13 @@ func (h *ContractHandler) GetPDF(c *gin.Context) {
 		return
 	}
 
-	// Get the PDF URL (prioritize converted file for DOCX)
 	pdfURL := contract.GetPDFURL()
 	if pdfURL == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "PDF not available"})
 		return
 	}
 
-	// Fetch PDF from MinIO
-	resp, err := http.Get(pdfURL)
+	resp, err := h.httpClient.Get(c.Request.Context(), pdfURL)
 	if err != nil {
 		slog.Error("failed to fetch PDF",
 			"contract_id", id,
@@ -640,22 +646,97 @@ func (h *ContractHandler) GetPDF(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF"})
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != http.StatusOK {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF from storage"})
 		return
 	}
 
-	// Stream PDF to client
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s.pdf\"", contract.ID))
 
-	_, err = io.Copy(c.Writer, resp.Body)
+	_, err = c.Writer.Write(resp.Body())
 	if err != nil {
-		slog.Error("failed to stream PDF",
+		slog.Error("failed to write PDF",
 			"contract_id", id,
 			"error", err,
 		)
 	}
+}
+
+// ReNormalize re-processes the raw_json_data using the current parser logic
+func (h *ContractHandler) ReNormalize(c *gin.Context) {
+	tenant := middleware.GetTenant(c)
+	id := c.Param("id")
+	requestID := middleware.GetRequestID(c)
+
+	contract := h.store.Get(id)
+	if contract == nil || contract.Tenant != tenant {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Contract not found"})
+		return
+	}
+
+	rawData, ok := contract.RawJSONData.(map[string]interface{})
+	if !ok || rawData == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No raw data available for re-normalization"})
+		return
+	}
+
+	selectedParser, err := h.parserRegistry.Get(parser.ParserType(contract.ParserType))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Parser %s not available", contract.ParserType)})
+		return
+	}
+
+	normalizedData, err := selectedParser.NormalizeResult(rawData)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to normalize data"})
+		return
+	}
+
+	contract.JSONData = normalizedData
+	h.store.Save(contract)
+
+	slog.Info("contract re-normalized",
+		"request_id", requestID,
+		"contract_id", id,
+		"parser_type", contract.ParserType,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "Re-normalization completed",
+		"contract_id": id,
+	})
+}
+
+// InvalidateCache clears the cache for a specific contract to allow reprocessing
+func (h *ContractHandler) InvalidateCache(c *gin.Context) {
+	tenant := middleware.GetTenant(c)
+	id := c.Param("id")
+	requestID := middleware.GetRequestID(c)
+
+	contract := h.store.Get(id)
+	if contract == nil || contract.Tenant != tenant {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Contract not found"})
+		return
+	}
+
+	if contract.FileHash == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Contract has no file hash"})
+		return
+	}
+
+	h.store.InvalidateCache(tenant, contract.FileHash)
+
+	slog.Info("cache invalidated",
+		"request_id", requestID,
+		"contract_id", id,
+		"tenant", tenant,
+		"file_hash", contract.FileHash,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "Cache invalidated successfully",
+		"file_hash": contract.FileHash,
+	})
 }

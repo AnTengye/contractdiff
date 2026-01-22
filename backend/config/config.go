@@ -9,9 +9,9 @@ import (
 type Config struct {
 	Server       ServerConfig       `yaml:"server"`
 	Minio        MinioConfig        `yaml:"minio"`
-	Parsers      ParsersConfig      `yaml:"parsers"`      // NEW: Multi-parser config
-	Mineru       MineruConfig       `yaml:"mineru"`       // Keep for backward compatibility
-	Gotenberg    GotenbergConfig    `yaml:"gotenberg"`    // NEW: DOCX to PDF conversion
+	Parsers      ParsersConfig      `yaml:"parsers"`   // NEW: Multi-parser config
+	Mineru       MineruConfig       `yaml:"mineru"`    // Keep for backward compatibility
+	Gotenberg    GotenbergConfig    `yaml:"gotenberg"` // NEW: DOCX to PDF conversion
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
 	Store        StoreConfig        `yaml:\"store"`
@@ -38,7 +38,7 @@ type MinioConfig struct {
 }
 
 type MineruConfig struct {
-	Enabled        bool   `yaml:"enabled"`          // NEW: Enable/disable this parser
+	Enabled        bool   `yaml:"enabled"` // NEW: Enable/disable this parser
 	APIURL         string `yaml:"api_url"`
 	APIToken       string `yaml:"api_token"`
 	ModelVersion   string `yaml:"model_version"`
@@ -50,21 +50,21 @@ type MineruConfig struct {
 
 // ParsersConfig contains configuration for all parsers
 type ParsersConfig struct {
-	Default   string            `yaml:"default"`    // Default parser to use
-	MinerU    *MineruConfig     `yaml:"mineru"`
-	PaddleOCR *PaddleOCRConfig  `yaml:"paddleocr"`
-	GOTOCR    *GOTOCRConfig     `yaml:"got_ocr"`
-	RAGFlow   *RAGFlowConfig    `yaml:"ragflow"`
+	Default   string           `yaml:"default"` // Default parser to use
+	MinerU    *MineruConfig    `yaml:"mineru"`
+	PaddleOCR *PaddleOCRConfig `yaml:"paddleocr"`
+	GOTOCR    *GOTOCRConfig    `yaml:"got_ocr"`
+	RAGFlow   *RAGFlowConfig   `yaml:"ragflow"`
 }
 
 // PaddleOCRConfig for PaddleOCR parser
 type PaddleOCRConfig struct {
-	Enabled                    bool   `yaml:"enabled"`
-	APIURL                     string `yaml:"api_url"`
-	APIToken                   string `yaml:"api_token"`
-	UseDocOrientationClassify  bool   `yaml:"use_doc_orientation_classify"`  // Optional: document orientation detection
-	UseDocUnwarping            bool   `yaml:"use_doc_unwarping"`            // Optional: document unwarping
-	UseChartRecognition        bool   `yaml:"use_chart_recognition"`        // Optional: chart recognition
+	Enabled                   bool   `yaml:"enabled"`
+	APIURL                    string `yaml:"api_url"`
+	APIToken                  string `yaml:"api_token"`
+	UseDocOrientationClassify bool   `yaml:"use_doc_orientation_classify"` // Optional: document orientation detection
+	UseDocUnwarping           bool   `yaml:"use_doc_unwarping"`            // Optional: document unwarping
+	UseChartRecognition       bool   `yaml:"use_chart_recognition"`        // Optional: chart recognition
 }
 
 // GOTOCRConfig for GOT-OCR parser
@@ -72,7 +72,7 @@ type GOTOCRConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	APIURL      string `yaml:"api_url"`
 	APIToken    string `yaml:"api_token"`
-	ModelType   string `yaml:"model_type"`   // "base", "large"
+	ModelType   string `yaml:"model_type"` // "base", "large"
 	CallbackURL string `yaml:"callback_url"`
 }
 
@@ -104,7 +104,8 @@ type User struct {
 }
 
 type StoreConfig struct {
-	MaxContracts int `yaml:"max_contracts"` // Maximum contracts to keep in memory, 0 = unlimited
+	MaxContracts  int `yaml:"max_contracts"`   // Maximum contracts to keep in memory, 0 = unlimited
+	CacheTTLHours int `yaml:"cache_ttl_hours"` // Cache TTL in hours, default 24 (1 day)
 }
 
 // NotificationConfig contains settings for webhook notifications
@@ -182,6 +183,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Notification.CheckIntervalHours == 0 {
 		cfg.Notification.CheckIntervalHours = 12
+	}
+	if cfg.Store.CacheTTLHours == 0 {
+		cfg.Store.CacheTTLHours = 24
 	}
 
 	GlobalConfig = &cfg

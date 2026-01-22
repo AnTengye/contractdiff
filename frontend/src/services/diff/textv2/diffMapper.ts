@@ -70,6 +70,7 @@ export function mapChangesToSegments(
           text,
           type: change.type,
           pageIdx: segment.pageIdx,
+          blockIdx: segment.blockIdx,
           bbox: segment.bbox,
           pageSize: segment.pageSize,
         });
@@ -87,6 +88,7 @@ export function mapChangesToSegments(
         text: remainingText,
         type: change.type,
         pageIdx: lastSegment?.pageIdx ?? -1,
+        blockIdx: lastSegment?.blockIdx,
         bbox: lastSegment?.bbox,
         pageSize: lastSegment?.pageSize,
       });
@@ -118,7 +120,7 @@ export function groupSegmentsByPage(
 }
 
 /**
- * Merge adjacent render segments with the same type and page
+ * Merge adjacent render segments with the same type, page, and block
  * This creates cleaner output for rendering
  */
 export function mergeAdjacentRenderSegments(
@@ -132,8 +134,12 @@ export function mergeAdjacentRenderSegments(
   for (let i = 1; i < segments.length; i++) {
     const next = segments[i]!;
 
-    // Merge if same type and same page
-    if (current.type === next.type && current.pageIdx === next.pageIdx) {
+    // Merge if same type, same page, and same block
+    if (
+      current.type === next.type &&
+      current.pageIdx === next.pageIdx &&
+      current.blockIdx === next.blockIdx
+    ) {
       current.text += next.text;
       
       // Merge bbox if both have one

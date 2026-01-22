@@ -10,13 +10,16 @@ import (
 	"github.com/AnTengye/contractdiff/backend/model"
 )
 
+const defaultCacheTTL = 24 * time.Hour
+
 // ContractStore is an in-memory store for contracts
 // In production, this should be replaced with a database
 type ContractStore struct {
 	contracts    map[string]*model.Contract
 	hashIndex    map[string]string // hash -> contract ID mapping for deduplication
 	mu           sync.RWMutex
-	maxContracts int // Maximum contracts to keep, 0 = unlimited
+	maxContracts int           // Maximum contracts to keep, 0 = unlimited
+	cacheTTL     time.Duration // Cache TTL for deduplication
 }
 
 var (
@@ -31,12 +34,17 @@ func InitContractStore(cfg *config.StoreConfig) {
 		if maxContracts < 0 {
 			maxContracts = 0
 		}
+		cacheTTL := time.Duration(cfg.CacheTTLHours) * time.Hour
+		if cacheTTL <= 0 {
+			cacheTTL = defaultCacheTTL
+		}
 		globalStore = &ContractStore{
 			contracts:    make(map[string]*model.Contract),
 			hashIndex:    make(map[string]string),
 			maxContracts: maxContracts,
+			cacheTTL:     cacheTTL,
 		}
-		slog.Info("contract store initialized", "max_contracts", maxContracts)
+		slog.Info("contract store initialized", "max_contracts", maxContracts, "cache_ttl_hours", int(cacheTTL.Hours()))
 	})
 }
 
@@ -47,7 +55,8 @@ func GetContractStore() *ContractStore {
 		globalStore = &ContractStore{
 			contracts:    make(map[string]*model.Contract),
 			hashIndex:    make(map[string]string),
-			maxContracts: 100, // Default: keep 100 contracts
+			maxContracts: 100,
+			cacheTTL:     defaultCacheTTL,
 		}
 	}
 	return globalStore
@@ -61,7 +70,9 @@ func (s *ContractStore) Save(contract *model.Contract) {
 	s.contracts[contract.ID] = contract
 
 	// Update hash index if file hash is available
-	if contract.FileHash != "" {
+	// Only update hashIndex for non-duplicate contracts to ensure
+	// the index always points to the original contract
+	if contract.FileHash != "" && !contract.IsDuplicate {
 		// Create a composite key: tenant + hash (for multi-tenant isolation)
 		hashKey := contract.Tenant + ":" + contract.FileHash
 		s.hashIndex[hashKey] = contract.ID
@@ -162,16 +173,36 @@ func (s *ContractStore) Count() int {
 }
 
 // FindByHash finds an existing contract by file hash within the same tenant
-// Returns nil if not found
+// Returns nil if not found or if the cache has expired
 func (s *ContractStore) FindByHash(tenant, fileHash string) *model.Contract {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	hashKey := tenant + ":" + fileHash
 	if contractID, ok := s.hashIndex[hashKey]; ok {
-		return s.contracts[contractID]
+		contract := s.contracts[contractID]
+		if contract != nil && s.isCacheValid(contract) {
+			return contract
+		}
 	}
 	return nil
+}
+
+// isCacheValid checks if a contract's cache is still valid based on TTL
+func (s *ContractStore) isCacheValid(contract *model.Contract) bool {
+	if s.cacheTTL <= 0 {
+		return true
+	}
+	return time.Since(contract.CreatedAt) < s.cacheTTL
+}
+
+// InvalidateCache removes a contract from the hash index to force reprocessing
+func (s *ContractStore) InvalidateCache(tenant, fileHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hashKey := tenant + ":" + fileHash
+	delete(s.hashIndex, hashKey)
 }
 
 // IncrementDuplicateCount increments the duplicate count for a contract

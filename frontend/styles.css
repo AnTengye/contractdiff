@@ -545,6 +545,23 @@ body {
     cursor: pointer;
 }
 
+.reprocess-btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+    margin-left: 0.5rem;
+}
+
+.reprocess-btn:hover {
+    background: rgba(245, 158, 11, 0.3);
+    border-color: #f59e0b;
+}
+
 /* Action Area */
 .action-area {
     display: flex;
@@ -752,6 +769,21 @@ body {
     text-decoration: line-through;
     padding: 2px 4px;
     border-radius: 4px;
+}
+
+.page-separator {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    padding: 0.75rem 0;
+    margin: 1rem 0;
+    border-top: 1px dashed var(--border-color);
+    border-bottom: 1px dashed var(--border-color);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.block-separator {
+    height: 0.75rem;
 }
 
 /* Diff Navigation */

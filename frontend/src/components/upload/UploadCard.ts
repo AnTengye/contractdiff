@@ -1,6 +1,6 @@
 // Upload card component
 import { contractStore, type ContractSideState } from '@/store';
-import { handleFileUpload, cancelUpload } from '@/features/upload';
+import { handleFileUpload, cancelUpload, reprocessFile } from '@/features/upload';
 import { getRequiredElement, hide, show } from '@/utils/dom';
 
 export class UploadCard {
@@ -15,6 +15,7 @@ export class UploadCard {
     cancelBtn: HTMLElement;
     contractIdDisplay: HTMLElement;
     parserSelector: HTMLSelectElement;
+    reprocessBtn: HTMLElement | null;
   };
 
   private unsubscribe: (() => void) | null = null;
@@ -22,6 +23,7 @@ export class UploadCard {
   constructor(side: 'left' | 'right') {
     this.side = side;
     this.elements = this.initElements();
+    this.createReprocessButton();
     this.bindEvents();
     this.subscribeToStore();
   }
@@ -37,7 +39,20 @@ export class UploadCard {
       cancelBtn: getRequiredElement(`cancel-btn-${this.side}`),
       contractIdDisplay: getRequiredElement(`contract-id-${this.side}`),
       parserSelector: getRequiredElement<HTMLSelectElement>(`parser-selector-${this.side}`),
+      reprocessBtn: null as HTMLElement | null,
     };
+  }
+
+  private createReprocessButton(): void {
+    const btn = document.createElement('button');
+    btn.id = `reprocess-btn-${this.side}`;
+    btn.className = 'reprocess-btn cancel-action';
+    btn.textContent = '重新处理';
+    btn.title = '清除缓存并重新解析文件';
+    btn.style.display = 'none';
+    
+    this.elements.contractIdDisplay.parentElement?.appendChild(btn);
+    this.elements.reprocessBtn = btn;
   }
 
   private bindEvents(): void {
@@ -59,10 +74,16 @@ export class UploadCard {
       }
     });
 
-    // Cancel button
+// Cancel button
     this.elements.cancelBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       cancelUpload(this.side);
+    });
+
+    // Reprocess button
+    this.elements.reprocessBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.handleReprocess();
     });
 
     // Drag and drop
@@ -115,25 +136,49 @@ export class UploadCard {
       show(info);
       info.textContent = `❌ ${state.error}`;
       info.style.color = 'var(--error)';
-    } else if (state.data) {
+} else if (state.data) {
       // Show success
       card.classList.remove('uploading');
       card.classList.add('has-file');
       hide(progressContainer);
       show(info);
-      info.textContent = `✓ ${state.fileName || 'File loaded'}`;
-      info.style.color = 'var(--success)';
+      
+      if (state.isCached) {
+        info.textContent = `✓ ${state.fileName || 'File loaded'} (缓存)`;
+        info.style.color = 'var(--warning, #f59e0b)';
+        if (this.elements.reprocessBtn) {
+          this.elements.reprocessBtn.style.display = 'inline-block';
+        }
+      } else {
+        info.textContent = `✓ ${state.fileName || 'File loaded'}`;
+        info.style.color = 'var(--success)';
+        if (this.elements.reprocessBtn) {
+          this.elements.reprocessBtn.style.display = 'none';
+        }
+      }
 
       if (state.contractId) {
         contractIdDisplay.textContent = `ID: ${state.contractId.substring(0, 8)}...`;
         contractIdDisplay.title = state.contractId;
       }
     } else {
-      // Initial state
+// Initial state
       card.classList.remove('uploading', 'has-file');
       hide(progressContainer);
       hide(info);
       contractIdDisplay.textContent = '';
+      if (this.elements.reprocessBtn) {
+        this.elements.reprocessBtn.style.display = 'none';
+      }
+    }
+  }
+
+  private async handleReprocess(): Promise<void> {
+    try {
+      await reprocessFile(this.side);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Reprocess failed';
+      console.error('Reprocess failed:', message);
     }
   }
 

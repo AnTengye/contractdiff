@@ -26,6 +26,7 @@ export interface Block {
   blocks?: Block[]; // Nested blocks (for lists, etc.)
   index?: number;
   page?: number; // 1-indexed page number
+  text?: string; // Direct text content (PaddleOCR format)
 }
 
 /**
@@ -90,6 +91,7 @@ export interface RenderSegment {
   text: string;
   type: DiffType;
   pageIdx: number;
+  blockIdx?: number;
   bbox?: [number, number, number, number];
   pageSize?: [number, number];
 }

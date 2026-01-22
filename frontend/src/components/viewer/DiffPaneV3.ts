@@ -50,6 +50,7 @@ export class DiffPaneV3 {
   private renderSegments(segments: RenderSegment[], currentDiffIndex: number): string {
     let html = '';
     let lastPage = -1;
+    let lastBlock: number | undefined = undefined;
     let diffIndex = 0;
 
     for (const segment of segments) {
@@ -57,7 +58,13 @@ export class DiffPaneV3 {
       if (segment.pageIdx !== lastPage && segment.pageIdx >= 0) {
         html += `<div class="page-separator">第 ${segment.pageIdx + 1} 页</div>`;
         lastPage = segment.pageIdx;
+        lastBlock = undefined;
       }
+
+      if (segment.blockIdx !== undefined && segment.blockIdx !== lastBlock && lastBlock !== undefined) {
+        html += '<div class="block-separator"></div>';
+      }
+      lastBlock = segment.blockIdx;
 
       // Skip empty unchanged segments
       if (segment.type === 'unchanged' && !segment.text.trim()) {

@@ -33,6 +33,7 @@ export const API_ENDPOINTS = {
   CONTRACTS_DETAIL: (id: string) => `/api/contracts/${id}`,
   CONTRACTS_STATUS: (id: string) => `/api/contracts/${id}/status`,
   CONTRACTS_PDF: (id: string) => `/api/contracts/${id}/pdf`,
+  CONTRACTS_CACHE: (id: string) => `/api/contracts/${id}/cache`,
   PARSERS: '/api/parsers',
 } as const;
 

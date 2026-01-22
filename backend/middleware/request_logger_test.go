@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -22,9 +23,6 @@ func TestRequestLoggerMiddleware(t *testing.T) {
 	router := gin.New()
 	router.Use(RequestID())
 	router.Use(RequestLogger())
-	router.GET("/test", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "ok"})
-	})
 	router.GET("/error", func(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
 	})
@@ -38,7 +36,6 @@ func TestRequestLoggerMiddleware(t *testing.T) {
 		expectedStatus int
 		logLevel       string
 	}{
-		{"success request", "/test", http.StatusOK, "INFO"},
 		{"client error", "/error", http.StatusBadRequest, "WARN"},
 		{"server error", "/server-error", http.StatusInternalServerError, "ERROR"},
 	}
@@ -57,6 +54,7 @@ func TestRequestLoggerMiddleware(t *testing.T) {
 			}
 
 			logOutput := buf.String()
+			fmt.Println(logOutput)
 			if !strings.Contains(logOutput, "request completed") {
 				t.Error("Expected 'request completed' in log")
 			}

@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,6 +94,108 @@ func TestMinioServiceUploadFile(t *testing.T) {
 	t.Skip("MinIO operations require actual MinIO client mock")
 }
 
+// TestSSLMismatchError verifies the error when HTTPS client connects to HTTP server
+// This reproduces: "http: server gave HTTP response to HTTPS client"
+func TestSSLMismatchError(t *testing.T) {
+	// Create HTTP server (no TLS)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpServer.Close()
+
+	// Extract host:port from server URL (remove http:// prefix)
+	endpoint := strings.TrimPrefix(httpServer.URL, "http://")
+
+	// Configure MinIO client with UseSSL=true against HTTP server
+	cfg := &config.MinioConfig{
+		Endpoint:   endpoint,
+		AccessKey:  "test",
+		SecretKey:  "test",
+		Bucket:     "test",
+		UseSSL:     true, // WRONG: server is HTTP, not HTTPS
+		ExpireDays: 7,
+	}
+
+	svc, err := NewMinioService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create MinIO service: %v", err)
+	}
+
+	// Try to ensure bucket - this will trigger the SSL mismatch error
+	ctx := context.Background()
+	err = svc.EnsureBucket(ctx)
+
+	// Should get an error about HTTP response to HTTPS client
+	if err == nil {
+		t.Error("Expected SSL mismatch error, got nil")
+		return
+	}
+
+	errStr := err.Error()
+	// The error message varies but typically contains one of these
+	isSSLError := strings.Contains(errStr, "http: server gave HTTP response to HTTPS client") ||
+		strings.Contains(errStr, "tls:") ||
+		strings.Contains(errStr, "certificate") ||
+		strings.Contains(errStr, "x509")
+
+	if !isSSLError {
+		t.Logf("Got error (may still be SSL related): %v", err)
+	} else {
+		t.Logf("Confirmed SSL mismatch error: %v", err)
+	}
+}
+
+// TestCorrectSSLConfig verifies correct configuration works
+func TestCorrectSSLConfig(t *testing.T) {
+	// Create HTTP server (no TLS)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// MinIO SDK checks for bucket existence with HEAD request
+		if r.Method == "HEAD" || r.Method == "GET" {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpServer.Close()
+
+	endpoint := strings.TrimPrefix(httpServer.URL, "http://")
+
+	// Configure MinIO client with UseSSL=false (correct for HTTP server)
+	cfg := &config.MinioConfig{
+		Endpoint:   endpoint,
+		AccessKey:  "test",
+		SecretKey:  "test",
+		Bucket:     "test",
+		UseSSL:     false, // CORRECT: matches HTTP server
+		ExpireDays: 7,
+	}
+
+	svc, err := NewMinioService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create MinIO service: %v", err)
+	}
+
+	// With correct SSL config, we should at least connect
+	// (bucket operation may fail for other reasons, but not SSL)
+	ctx := context.Background()
+	err = svc.EnsureBucket(ctx)
+
+	if err != nil {
+		errStr := err.Error()
+		// Should NOT be an SSL error
+		isSSLError := strings.Contains(errStr, "http: server gave HTTP response to HTTPS client") ||
+			strings.Contains(errStr, "tls:")
+
+		if isSSLError {
+			t.Errorf("Got unexpected SSL error with correct config: %v", err)
+		} else {
+			// Other errors are acceptable (mock server doesn't fully implement MinIO)
+			t.Logf("Non-SSL error (expected with mock): %v", err)
+		}
+	}
+}
+
 func TestMinioServiceEnsureBucket(t *testing.T) {
 	// Note: This requires actual MinIO connection or proper mocking
 	t.Skip("MinIO operations require actual MinIO client mock")
@@ -109,7 +211,6 @@ func TestMinioServiceGetPresignedURL(t *testing.T) {
 	t.Skip("MinIO operations require actual MinIO client mock")
 }
 
-// Test context cancellation
 func TestMinioServiceWithContext(t *testing.T) {
 	cfg := &config.MinioConfig{
 		Endpoint:   "localhost:9000",
@@ -125,25 +226,74 @@ func TestMinioServiceWithContext(t *testing.T) {
 		t.Skip("Could not create MinIO service")
 	}
 
-	// Test with cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// These operations should fail fast with cancelled context
 	err = svc.UploadFile(ctx, "test", strings.NewReader("test"), 4, "text/plain")
 	if err == nil {
 		t.Log("Upload with cancelled context - error handling depends on client implementation")
 	}
 }
 
-// Test reader interface
-type errorReader struct{}
+func TestRetryMechanismOnTransientError(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 
-func (e errorReader) Read(p []byte) (n int, err error) {
-	return 0, io.ErrUnexpectedEOF
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	cfg := &config.MinioConfig{
+		Endpoint:   endpoint,
+		AccessKey:  "test",
+		SecretKey:  "test",
+		Bucket:     "test",
+		UseSSL:     false,
+		ExpireDays: 7,
+	}
+
+	svc, err := NewMinioService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create MinIO service: %v", err)
+	}
+
+	ctx := context.Background()
+	err = svc.UploadFile(ctx, "test-object", strings.NewReader("test data"), 9, "text/plain")
+
+	t.Logf("Request count: %d, Error: %v", requestCount, err)
+	if requestCount < 2 {
+		t.Error("Expected at least 2 requests due to retry mechanism")
+	}
 }
 
-func TestMinioServiceUploadFileWithErrorReader(t *testing.T) {
-	// This test verifies error handling when reading fails
-	t.Skip("MinIO operations require actual MinIO client mock")
+func TestIsRetryableError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"SSL mismatch", fmt.Errorf("http: server gave HTTP response to HTTPS client"), true},
+		{"connection reset", fmt.Errorf("connection reset by peer"), true},
+		{"connection refused", fmt.Errorf("dial tcp: connection refused"), true},
+		{"timeout", fmt.Errorf("i/o timeout"), true},
+		{"EOF", fmt.Errorf("unexpected EOF"), true},
+		{"auth error", fmt.Errorf("Access Denied"), false},
+		{"not found", fmt.Errorf("bucket not found"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRetryableError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isRetryableError(%v) = %v, want %v", tt.err, result, tt.expected)
+			}
+		})
+	}
 }

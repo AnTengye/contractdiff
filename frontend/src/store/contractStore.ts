@@ -12,6 +12,7 @@ interface ContractSideState {
   uploadProgress: number;
   progressText: string;
   error: string | null;
+  isCached: boolean;
 }
 
 interface ContractState {
@@ -34,6 +35,7 @@ const createInitialSideState = (): ContractSideState => ({
   uploadProgress: 0,
   progressText: '',
   error: null,
+  isCached: false,
 });
 
 const initialState: ContractState = {
@@ -55,13 +57,14 @@ export const selectIsUploading = (state: ContractState) =>
 
 // Actions
 export const contractActions = {
-  setData(
+setData(
     side: 'left' | 'right',
     data: ContractData,
     contractId: string,
     pdfUrl: string,
     fileType: FileType,
-    fileName: string
+    fileName: string,
+    isCached = false
   ) {
     contractStore.setState(state => ({
       [side]: {
@@ -73,6 +76,7 @@ export const contractActions = {
         fileName,
         isUploading: false,
         error: null,
+        isCached,
       },
     }));
   },

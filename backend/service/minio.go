@@ -5,11 +5,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+const (
+	maxRetries    = 3
+	retryBaseWait = 100 * time.Millisecond
 )
 
 type MinioService struct {
@@ -34,33 +41,84 @@ func NewMinioService(cfg *config.MinioConfig) (*MinioService, error) {
 	}, nil
 }
 
-// EnsureBucket creates the bucket if it doesn't exist
 func (s *MinioService) EnsureBucket(ctx context.Context) error {
-	exists, err := s.client.BucketExists(ctx, s.bucket)
-	if err != nil {
-		return fmt.Errorf("failed to check bucket: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			slog.Warn("retrying MinIO bucket check", "attempt", attempt+1, "bucket", s.bucket, "wait", wait)
+			time.Sleep(wait)
+		}
+
+		exists, err := s.client.BucketExists(ctx, s.bucket)
+		if err != nil {
+			lastErr = err
+			if isRetryableError(err) {
+				continue
+			}
+			return fmt.Errorf("failed to check bucket: %w", err)
+		}
+
+		if !exists {
+			err = s.client.MakeBucket(ctx, s.bucket, minio.MakeBucketOptions{})
+			if err != nil {
+				lastErr = err
+				if isRetryableError(err) {
+					continue
+				}
+				return fmt.Errorf("failed to create bucket: %w", err)
+			}
+		}
+
+		return nil
 	}
 
-	if !exists {
-		err = s.client.MakeBucket(ctx, s.bucket, minio.MakeBucketOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to create bucket: %w", err)
+	return fmt.Errorf("failed to ensure bucket after %d attempts: %w", maxRetries, lastErr)
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "http: server gave HTTP response to HTTPS client") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "503") ||
+		strings.Contains(errStr, "Service Unavailable") ||
+		strings.Contains(errStr, "502") ||
+		strings.Contains(errStr, "Bad Gateway")
+}
+
+func (s *MinioService) UploadFile(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read file data: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			slog.Warn("retrying MinIO upload", "attempt", attempt+1, "object", objectName, "wait", wait)
+			time.Sleep(wait)
+		}
+
+		_, lastErr = s.client.PutObject(ctx, s.bucket, objectName, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{
+			ContentType: contentType,
+		})
+		if lastErr == nil {
+			return nil
+		}
+
+		if !isRetryableError(lastErr) {
+			break
 		}
 	}
 
-	return nil
-}
-
-// UploadFile uploads a file to MINIO and returns the object name
-func (s *MinioService) UploadFile(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
-	_, err := s.client.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{
-		ContentType: contentType,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to upload file: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("failed to upload file after %d attempts: %w", maxRetries, lastErr)
 }
 
 // GetPresignedURL generates a presigned URL for the object with expiration
@@ -93,18 +151,26 @@ func (s *MinioService) GetPublicURL(objectName string) string {
 	return fmt.Sprintf("%s://%s/%s/%s", protocol, s.config.Endpoint, s.bucket, objectName)
 }
 
-// UploadBytes uploads byte data to MinIO and returns the presigned URL
 func (s *MinioService) UploadBytes(ctx context.Context, objectName string, data []byte, contentType string) (string, error) {
-	reader := bytes.NewReader(data)
-	size := int64(len(data))
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			slog.Warn("retrying MinIO upload bytes", "attempt", attempt+1, "object", objectName, "wait", wait)
+			time.Sleep(wait)
+		}
 
-	_, err := s.client.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{
-		ContentType: contentType,
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to upload bytes: %w", err)
+		_, lastErr = s.client.PutObject(ctx, s.bucket, objectName, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{
+			ContentType: contentType,
+		})
+		if lastErr == nil {
+			return s.GetPresignedURL(ctx, objectName)
+		}
+
+		if !isRetryableError(lastErr) {
+			break
+		}
 	}
 
-	// Return presigned URL
-	return s.GetPresignedURL(ctx, objectName)
+	return "", fmt.Errorf("failed to upload bytes after %d attempts: %w", maxRetries, lastErr)
 }

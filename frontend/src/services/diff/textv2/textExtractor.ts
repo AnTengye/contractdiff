@@ -90,6 +90,15 @@ function buildPageSizeMap(data: ContractData): Map<number, [number, number]> {
     }
   }
   
+  const metadata = (data as any).metadata;
+  if (metadata?.page_sizes && Array.isArray(metadata.page_sizes)) {
+    for (const ps of metadata.page_sizes) {
+      if (ps.width && ps.height) {
+        map.set(ps.page_idx, [ps.width, ps.height] as [number, number]);
+      }
+    }
+  }
+  
   return map;
 }
 
@@ -122,7 +131,7 @@ function extractBlockSegments(
     return { segments, nextOffset: currentOffset };
   }
   
-  // Handle lines/spans structure
+  // Handle lines/spans structure (MinerU format)
   if (block.lines && block.lines.length > 0) {
     for (let lineIdx = 0; lineIdx < block.lines.length; lineIdx++) {
       const line = block.lines[lineIdx]!;
@@ -148,6 +157,22 @@ function extractBlockSegments(
         }
       }
     }
+  }
+  // Handle direct text field (PaddleOCR format)
+  else if (block.text) {
+    const content = block.text;
+    segments.push({
+      text: content,
+      pageIdx,
+      blockIdx,
+      lineIdx: 0,
+      spanIdx: 0,
+      bbox: block.bbox,
+      pageSize,
+      startOffset: currentOffset,
+      endOffset: currentOffset + content.length,
+    });
+    currentOffset += content.length;
   }
   
   return { segments, nextOffset: currentOffset };

@@ -1,27 +1,24 @@
 package notify
 
 import (
-	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/AnTengye/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/pkg/httpclient"
 )
 
-// FeishuNotifier sends notifications via Feishu webhook
 type FeishuNotifier struct {
 	webhookURL string
 	secret     string
-	client     *http.Client
+	client     *httpclient.Client
 }
 
-// Feishu message types
 type feishuMessage struct {
 	MsgType string        `json:"msg_type"`
 	Content feishuContent `json:"content"`
@@ -74,43 +71,34 @@ type feishuResponse struct {
 	Msg  string `json:"msg"`
 }
 
-// NewFeishuNotifier creates a new Feishu notifier
 func NewFeishuNotifier(cfg *config.FeishuConfig) *FeishuNotifier {
 	return &FeishuNotifier{
 		webhookURL: cfg.WebhookURL,
 		secret:     cfg.Secret,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		client:     httpclient.NewWithTimeout(10 * time.Second),
 	}
 }
 
-// Name returns the notifier name
 func (f *FeishuNotifier) Name() string {
 	return "Feishu"
 }
 
-// IsConfigured returns true if the notifier is properly configured
 func (f *FeishuNotifier) IsConfigured() bool {
 	return f.webhookURL != ""
 }
 
-// Send sends a text message to Feishu
 func (f *FeishuNotifier) Send(title, content string) error {
 	if !f.IsConfigured() {
 		return fmt.Errorf("Feishu webhook URL is not configured")
 	}
 
-	// Combine title and content for text message
 	fullContent := fmt.Sprintf("【%s】\n\n%s", title, content)
 
-	var jsonData []byte
-	var err error
+	var body interface{}
 
 	if f.secret != "" {
-		// Use signed message
 		timestamp, sign := f.generateSignature()
-		msg := feishuSignedMessage{
+		body = feishuSignedMessage{
 			Timestamp: timestamp,
 			Sign:      sign,
 			MsgType:   "text",
@@ -118,41 +106,26 @@ func (f *FeishuNotifier) Send(title, content string) error {
 				Text: fullContent,
 			},
 		}
-		jsonData, err = json.Marshal(msg)
 	} else {
-		// Use simple message
-		msg := feishuMessage{
+		body = feishuMessage{
 			MsgType: "text",
 			Content: feishuContent{
 				Text: fullContent,
 			},
 		}
-		jsonData, err = json.Marshal(msg)
 	}
 
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", f.webhookURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := f.client.Do(req)
+	ctx := context.Background()
+	resp, err := f.client.R(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetBody(body).
+		Post(f.webhookURL)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
 
 	var result feishuResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -163,8 +136,6 @@ func (f *FeishuNotifier) Send(title, content string) error {
 	return nil
 }
 
-// generateSignature generates timestamp and signature for signed webhooks
-// Following Feishu documentation: https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
 func (f *FeishuNotifier) generateSignature() (string, string) {
 	timestamp := time.Now().Unix()
 	timestampStr := fmt.Sprintf("%d", timestamp)
@@ -178,7 +149,6 @@ func (f *FeishuNotifier) generateSignature() (string, string) {
 	return timestampStr, signature
 }
 
-// GenerateFeishuSignature exposes signature generation for testing
 func GenerateFeishuSignature(secret string, timestamp int64) string {
 	timestampStr := fmt.Sprintf("%d", timestamp)
 	stringToSign := fmt.Sprintf("%s\n%s", timestampStr, secret)

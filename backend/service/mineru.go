@@ -3,6 +3,7 @@ package service
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,32 +15,30 @@ import (
 	"time"
 
 	"github.com/AnTengye/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/pkg/httpclient"
 )
 
-// MinerU API error codes
 const (
-	MineruErrorTokenInvalid = "A0202" // Token 错误
-	MineruErrorTokenExpired = "A0211" // Token 过期
-	MineruErrorParamInvalid = -500    // 传参错误
-	MineruErrorServiceError = -10001  // 服务异常
-	MineruErrorRequestParam = -10002  // 请求参数错误
-	MineruErrorTaskNotFound = -60012  // 找不到任务
-	MineruErrorNoPermission = -60013  // 没有权限访问该任务
-	MineruErrorDailyLimit   = -60018  // 每日解析任务数量已达上限
+	MineruErrorTokenInvalid = "A0202"
+	MineruErrorTokenExpired = "A0211"
+	MineruErrorParamInvalid = -500
+	MineruErrorServiceError = -10001
+	MineruErrorRequestParam = -10002
+	MineruErrorTaskNotFound = -60012
+	MineruErrorNoPermission = -60013
+	MineruErrorDailyLimit   = -60018
 )
 
-// MineruAPIError represents a structured error from MinerU API
 type MineruAPIError struct {
-	Code        interface{} // Can be string (A0202, A0211) or int (-500, -60012, etc.)
+	Code        interface{}
 	Message     string
-	IsAuthError bool // True if error is related to authentication/token
+	IsAuthError bool
 }
 
 func (e *MineruAPIError) Error() string {
 	return fmt.Sprintf("MinerU API error [%v]: %s", e.Code, e.Message)
 }
 
-// IsMineruAuthError checks if an error is a MinerU authentication error
 func IsMineruAuthError(err error) bool {
 	if mineruErr, ok := err.(*MineruAPIError); ok {
 		return mineruErr.IsAuthError
@@ -47,7 +46,6 @@ func IsMineruAuthError(err error) bool {
 	return false
 }
 
-// GetMineruErrorMessage returns a user-friendly error message
 func GetMineruErrorMessage(err error) string {
 	if mineruErr, ok := err.(*MineruAPIError); ok {
 		switch mineruErr.Code {
@@ -62,7 +60,6 @@ func GetMineruErrorMessage(err error) string {
 		case MineruErrorNoPermission:
 			return "没有权限访问该解析任务"
 		default:
-			// Check if it's an auth error by message
 			if mineruErr.IsAuthError {
 				return "解析工具 Token 已过期，请更新 Token"
 			}
@@ -72,20 +69,17 @@ func GetMineruErrorMessage(err error) string {
 	return err.Error()
 }
 
-// ParseMineruError creates a structured error from API response
 func ParseMineruError(code interface{}, message string) *MineruAPIError {
 	err := &MineruAPIError{
 		Code:    code,
 		Message: message,
 	}
 
-	// Check for auth errors by code
 	switch code {
 	case MineruErrorTokenInvalid, MineruErrorTokenExpired:
 		err.IsAuthError = true
 	}
 
-	// Also check for auth errors by message content
 	msgLower := strings.ToLower(message)
 	if strings.Contains(msgLower, "authenticate") ||
 		strings.Contains(msgLower, "token") ||
@@ -99,10 +93,9 @@ func ParseMineruError(code interface{}, message string) *MineruAPIError {
 
 type MineruService struct {
 	config     *config.MineruConfig
-	httpClient *http.Client
+	httpClient *httpclient.Client
 }
 
-// MineruTaskRequest represents the request to create an extraction task
 type MineruTaskRequest struct {
 	URL          string `json:"url"`
 	ModelVersion string `json:"model_version"`
@@ -111,24 +104,22 @@ type MineruTaskRequest struct {
 	DataID       string `json:"data_id,omitempty"`
 }
 
-// MineruTaskResponse represents the response from task creation
 type MineruTaskResponse struct {
-	Code    json.RawMessage `json:"code"` // Can be int (0) or string ("A0202")
+	Code    json.RawMessage `json:"code"`
 	Message string          `json:"msg"`
 	Data    struct {
 		TaskID string `json:"task_id"`
 	} `json:"data"`
 }
 
-// MineruTaskStatusResponse represents the task status query response
 type MineruTaskStatusResponse struct {
-	Code    json.RawMessage `json:"code"` // Can be int (0) or string ("A0202")
+	Code    json.RawMessage `json:"code"`
 	Message string          `json:"msg"`
 	TraceID string          `json:"trace_id"`
 	Data    struct {
 		TaskID          string `json:"task_id"`
 		DataID          string `json:"data_id"`
-		State           string `json:"state"` // pending, running, done, failed, converting
+		State           string `json:"state"`
 		FullZipURL      string `json:"full_zip_url,omitempty"`
 		ErrorMsg        string `json:"err_msg,omitempty"`
 		ModelVersion    string `json:"model_version,omitempty"`
@@ -140,14 +131,11 @@ type MineruTaskStatusResponse struct {
 	} `json:"data"`
 }
 
-// parseCodeValue extracts the code value from json.RawMessage
 func parseCodeValue(raw json.RawMessage) interface{} {
-	// Try as int first
 	var intCode int
 	if err := json.Unmarshal(raw, &intCode); err == nil {
 		return intCode
 	}
-	// Try as string
 	var strCode string
 	if err := json.Unmarshal(raw, &strCode); err == nil {
 		return strCode
@@ -155,7 +143,6 @@ func parseCodeValue(raw json.RawMessage) interface{} {
 	return string(raw)
 }
 
-// isSuccessCode checks if the code indicates success (0)
 func isSuccessCode(raw json.RawMessage) bool {
 	var intCode int
 	if err := json.Unmarshal(raw, &intCode); err == nil {
@@ -164,7 +151,6 @@ func isSuccessCode(raw json.RawMessage) bool {
 	return false
 }
 
-// MineruCallbackPayload represents the callback payload from MinerU
 type MineruCallbackPayload struct {
 	Checksum string `json:"checksum"`
 	Content  string `json:"content"`
@@ -172,14 +158,11 @@ type MineruCallbackPayload struct {
 
 func NewMineruService(cfg *config.MineruConfig) *MineruService {
 	return &MineruService{
-		config: cfg,
-		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		config:     cfg,
+		httpClient: httpclient.NewWithTimeout(60 * time.Second),
 	}
 }
 
-// CreateTask creates a new extraction task
 func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, error) {
 	reqBody := MineruTaskRequest{
 		URL:          pdfURL,
@@ -192,40 +175,25 @@ func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, 
 		reqBody.Seed = s.config.Seed
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", s.config.APIURL+"/extract/task", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+s.config.APIToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := s.httpClient.Do(req)
+	ctx := context.Background()
+	resp, err := s.httpClient.R(ctx).
+		SetHeader("Authorization", "Bearer "+s.config.APIToken).
+		SetHeader("Content-Type", "application/json").
+		SetHeader("Accept", "*/*").
+		SetBody(reqBody).
+		Post(s.config.APIURL + "/extract/task")
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Log response for debugging
 	slog.Info("MinerU create task response",
-		"status_code", resp.StatusCode,
-		"body", string(body),
+		"status_code", resp.StatusCode(),
+		"body", string(resp.Body()),
 	)
 
 	var result MineruTaskResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w, body: %s", err, string(body))
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w, body: %s", err, string(resp.Body()))
 	}
 
 	if !isSuccessCode(result.Code) {
@@ -235,35 +203,23 @@ func (s *MineruService) CreateTask(pdfURL, dataID string) (*MineruTaskResponse, 
 	return &result, nil
 }
 
-// GetTaskStatus queries the status of a task
 func (s *MineruService) GetTaskStatus(taskID string) (*MineruTaskStatusResponse, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/extract/task/%s", s.config.APIURL, taskID), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+s.config.APIToken)
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := s.httpClient.Do(req)
+	ctx := context.Background()
+	resp, err := s.httpClient.R(ctx).
+		SetHeader("Authorization", "Bearer "+s.config.APIToken).
+		SetHeader("Accept", "*/*").
+		Get(fmt.Sprintf("%s/extract/task/%s", s.config.APIURL, taskID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Log raw response for debugging at debug level
 	slog.Debug("MinerU status response",
 		"task_id", taskID,
-		"body", string(body),
+		"body", string(resp.Body()),
 	)
 
 	var result MineruTaskStatusResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -274,68 +230,59 @@ func (s *MineruService) GetTaskStatus(taskID string) (*MineruTaskStatusResponse,
 	return &result, nil
 }
 
-// VerifyCallback verifies the callback checksum
 func (s *MineruService) VerifyCallback(checksum, content string, uid string) bool {
-	// Checksum = SHA256(uid + seed + content)
 	data := uid + s.config.Seed + content
 	hash := sha256.Sum256([]byte(data))
 	expected := hex.EncodeToString(hash[:])
 	return checksum == expected
 }
 
-// FetchJSONResult fetches the JSON result from a direct URL (legacy)
 func (s *MineruService) FetchJSONResult(jsonURL string) (map[string]interface{}, error) {
-	resp, err := s.httpClient.Get(jsonURL)
+	ctx := context.Background()
+	resp, err := s.httpClient.Get(ctx, jsonURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JSON: %w", err)
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read JSON: %w", err)
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch JSON, status: %d", resp.StatusCode())
 	}
 
 	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	return result, nil
 }
 
-// FetchZipAndExtractJSON downloads the ZIP file and extracts the JSON content
 func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interface{}, error) {
 	slog.Debug("downloading ZIP", "url", zipURL)
 
-	resp, err := s.httpClient.Get(zipURL)
+	ctx := context.Background()
+	resp, err := s.httpClient.Get(ctx, zipURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download ZIP: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Read the entire ZIP into memory
-	zipData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read ZIP: %w", err)
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("failed to download ZIP, status: %d", resp.StatusCode())
 	}
 
+	zipData := resp.Body()
 	slog.Debug("ZIP downloaded", "size_bytes", len(zipData))
 
-	// Open the ZIP archive
 	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open ZIP: %w", err)
 	}
 
-	// Look for JSON files in the ZIP
 	var jsonData map[string]interface{}
 	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
 
 	for _, file := range zipReader.File {
 		slog.Debug("ZIP file entry", "name", file.Name)
 
-		// Check if this is one of the JSON files we're looking for
 		for _, targetFile := range jsonFiles {
 			if strings.HasSuffix(file.Name, targetFile) {
 				slog.Debug("found target JSON", "file", file.Name)
@@ -362,7 +309,6 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 		}
 	}
 
-	// If no specific JSON found, try any .json file
 	for _, file := range zipReader.File {
 		if strings.HasSuffix(file.Name, ".json") {
 			slog.Debug("trying fallback JSON", "file", file.Name)
@@ -389,32 +335,28 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	return nil, fmt.Errorf("no valid JSON file found in ZIP")
 }
 
-// ZipExtractResult holds both JSON and PDF extracted from MinerU ZIP
 type ZipExtractResult struct {
 	JSONData map[string]interface{}
 	PDFData  []byte
 	PDFName  string
 }
 
-// FetchZipAndExtractFiles downloads the ZIP file and extracts both JSON and PDF content
 func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResult, error) {
 	slog.Debug("downloading ZIP for full extraction", "url", zipURL)
 
-	resp, err := s.httpClient.Get(zipURL)
+	ctx := context.Background()
+	resp, err := s.httpClient.Get(ctx, zipURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download ZIP: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Read the entire ZIP into memory
-	zipData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read ZIP: %w", err)
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("failed to download ZIP, status: %d", resp.StatusCode())
 	}
 
+	zipData := resp.Body()
 	slog.Debug("ZIP downloaded", "size_bytes", len(zipData))
 
-	// Open the ZIP archive
 	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open ZIP: %w", err)
@@ -422,14 +364,12 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 
 	result := &ZipExtractResult{}
 
-	// Target files to look for
 	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
 	pdfFiles := []string{"layout.pdf", "spans.pdf", "origin.pdf"}
 
 	for _, file := range zipReader.File {
 		slog.Debug("ZIP file entry", "name", file.Name)
 
-		// Try to extract JSON
 		if result.JSONData == nil {
 			for _, targetFile := range jsonFiles {
 				if strings.HasSuffix(file.Name, targetFile) {
@@ -452,7 +392,6 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 			}
 		}
 
-		// Try to extract PDF
 		if result.PDFData == nil {
 			for _, targetFile := range pdfFiles {
 				if strings.HasSuffix(file.Name, targetFile) {
@@ -465,7 +404,6 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 					if err != nil {
 						continue
 					}
-					// Verify it's a PDF (starts with %PDF)
 					if len(content) > 4 && string(content[:4]) == "%PDF" {
 						result.PDFData = content
 						result.PDFName = targetFile
@@ -476,13 +414,11 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 			}
 		}
 
-		// If both found, we can stop
 		if result.JSONData != nil && result.PDFData != nil {
 			break
 		}
 	}
 
-	// Fallback: try any .json file
 	if result.JSONData == nil {
 		for _, file := range zipReader.File {
 			if strings.HasSuffix(file.Name, ".json") {
@@ -504,7 +440,6 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 		}
 	}
 
-	// Fallback: try any .pdf file
 	if result.PDFData == nil {
 		for _, file := range zipReader.File {
 			if strings.HasSuffix(file.Name, ".pdf") {
