@@ -138,20 +138,29 @@ func main() {
 	router.Use(cacheMiddleware())                      // Cache control
 	router.Use(middleware.RateLimit(100, time.Minute)) // Rate limiting: 100 requests per minute
 
-	// Determine static files directory
-	staticDir := "./frontend/"
+	// Determine static files directory (production: ./static, development: ../frontend)
+	staticDir := "./static/"
 	if _, err := os.Stat(staticDir + "index.html"); os.IsNotExist(err) {
 		staticDir = "../frontend/"
 	}
 	slog.Info("serving static files", "directory", staticDir)
 
-	// Serve static files
-	router.Static("/static", staticDir)
+	// Serve Vite build output (assets directory contains hashed JS/CSS bundles)
+	router.Static("/assets", staticDir+"assets")
 	router.StaticFile("/", staticDir+"index.html")
 	router.StaticFile("/login.html", staticDir+"login.html")
 	router.StaticFile("/index.html", staticDir+"index.html")
-	router.StaticFile("/app.js", staticDir+"app.js")
-	router.StaticFile("/styles.css", staticDir+"styles.css")
+	// Serve any additional static files at root level
+	router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		filePath := staticDir + path[1:]
+		if _, err := os.Stat(filePath); err == nil {
+			c.File(filePath)
+			return
+		}
+		// SPA fallback: serve index.html for unmatched routes
+		c.File(staticDir + "index.html")
+	})
 
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
