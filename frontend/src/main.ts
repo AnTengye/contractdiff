@@ -117,13 +117,7 @@ async function init(): Promise<void> {
     redirectToLogin();
   };
 
-  // Expose test functions for debugging
-  import('@/tests/testPdfHighlight').then(module => {
-    (window as any).testPdfHighlight = module.runAllTests;
-    console.log('Test function available: window.testPdfHighlight()');
-  }).catch(() => {
-    // Ignore if test module not available
-  });
+
 
   console.log('ContractDiff initialized');
 }

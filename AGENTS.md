@@ -240,5 +240,5 @@ func TestHandler(t *testing.T) {
 ### Frontend Manual Testing
 ```javascript
 // Available in browser console after app loads
-window.testPdfHighlight()
+window.testDiffV3.runAllTests()
 ```

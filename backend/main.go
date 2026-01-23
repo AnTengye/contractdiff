@@ -138,10 +138,10 @@ func main() {
 	router.Use(cacheMiddleware())                      // Cache control
 	router.Use(middleware.RateLimit(100, time.Minute)) // Rate limiting: 100 requests per minute
 
-	// Determine static files directory (production: ./static, development: ../frontend)
+	// Determine static files directory (production: ./static, development: ../frontend/dist)
 	staticDir := "./static/"
 	if _, err := os.Stat(staticDir + "index.html"); os.IsNotExist(err) {
-		staticDir = "../frontend/"
+		staticDir = "../frontend/dist/"
 	}
 	slog.Info("serving static files", "directory", staticDir)
 
