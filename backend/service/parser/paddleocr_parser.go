@@ -75,8 +75,9 @@ func (p *PaddleOCRParser) CreateTask(ctx context.Context, fileURL, documentID st
 		"encoding_duration_ms", time.Since(encodeStart).Milliseconds())
 
 	reqBody := map[string]interface{}{
-		"file":     fileData,
-		"fileType": 0,
+		"file":               fileData,
+		"fileType":           0,
+		"useLayoutDetection": true, // 是否在推理时使用版面区域检测排序模块，开启后，可以自动检测文档中不同区域并排序。
 	}
 
 	if p.config.UseDocOrientationClassify {
