@@ -43,18 +43,24 @@ func (c *TokenChecker) Start() {
 	}
 	c.running = true
 	c.mu.Unlock()
+	if c.config.Parsers.MinerU == nil {
+		slog.Warn("MinerU parser is not configured, token expiration checking is disabled")
+		return
+	}
+
+	minerCfg := c.config.Parsers.MinerU
 
 	// Check if token_created_at is configured
-	if c.config.Mineru.TokenCreatedAt == "" {
+	if minerCfg.TokenCreatedAt == "" {
 		slog.Warn("MinerU token_created_at is not configured, token expiration checking is disabled")
 		return
 	}
 
 	// Parse the token creation time
-	_, err := time.Parse(time.RFC3339, c.config.Mineru.TokenCreatedAt)
+	_, err := time.Parse(time.RFC3339, minerCfg.TokenCreatedAt)
 	if err != nil {
 		slog.Error("Failed to parse token_created_at, token expiration checking is disabled",
-			"value", c.config.Mineru.TokenCreatedAt,
+			"value", minerCfg.TokenCreatedAt,
 			"error", err,
 		)
 		return
@@ -66,7 +72,7 @@ func (c *TokenChecker) Start() {
 
 	slog.Info("Token expiration checker started",
 		"check_interval_hours", c.config.Notification.CheckIntervalHours,
-		"token_valid_days", c.config.Mineru.TokenValidDays,
+		"token_valid_days", minerCfg.TokenValidDays,
 	)
 
 	// Check immediately on startup
@@ -144,12 +150,12 @@ func (c *TokenChecker) checkExpiration() {
 
 // CalculateDaysRemaining calculates how many days until the token expires
 func (c *TokenChecker) CalculateDaysRemaining(now time.Time) (int, error) {
-	createdAt, err := time.Parse(time.RFC3339, c.config.Mineru.TokenCreatedAt)
+	createdAt, err := time.Parse(time.RFC3339, c.config.Parsers.MinerU.TokenCreatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse token_created_at: %w", err)
 	}
 
-	expiresAt := createdAt.AddDate(0, 0, c.config.Mineru.TokenValidDays)
+	expiresAt := createdAt.AddDate(0, 0, c.config.Parsers.MinerU.TokenValidDays)
 	daysRemaining := int(expiresAt.Sub(now).Hours() / 24)
 
 	return daysRemaining, nil
@@ -166,8 +172,8 @@ func (c *TokenChecker) buildNotificationMessage(daysRemaining int) (string, stri
 			"**Token 创建时间**：%s\n"+
 			"**有效期**：%d 天\n\n"+
 			"更新后请修改配置文件中的 `mineru.api_token` 和 `mineru.token_created_at`",
-			c.config.Mineru.TokenCreatedAt,
-			c.config.Mineru.TokenValidDays,
+			c.config.Parsers.MinerU.TokenCreatedAt,
+			c.config.Parsers.MinerU.TokenValidDays,
 		)
 	} else {
 		title = fmt.Sprintf("⏰ 解析工具 Token 将在 %d 天后过期", daysRemaining)
@@ -177,8 +183,8 @@ func (c *TokenChecker) buildNotificationMessage(daysRemaining int) (string, stri
 			"**有效期**：%d 天\n\n"+
 			"请及时更新 Token，更新后请修改配置文件中的 `mineru.api_token` 和 `mineru.token_created_at`",
 			daysRemaining,
-			c.config.Mineru.TokenCreatedAt,
-			c.config.Mineru.TokenValidDays,
+			c.config.Parsers.MinerU.TokenCreatedAt,
+			c.config.Parsers.MinerU.TokenValidDays,
 		)
 	}
 

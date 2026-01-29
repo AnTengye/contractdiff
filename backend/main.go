@@ -51,7 +51,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mineruSvc := service.NewMineruService(&cfg.Mineru)
+	mineruSvc := service.NewMineruService(cfg.Parsers.MinerU)
 
 	// Initialize parser registry
 	parserRegistry := parser.GetRegistry()
@@ -66,19 +66,6 @@ func main() {
 				slog.Error("failed to register MinerU parser", "error", err)
 			} else {
 				slog.Info("MinerU parser registered")
-			}
-		}
-	} else if cfg.Mineru.APIURL != "" {
-		// Backward compatibility: use old Mineru config if Parsers.MinerU not configured
-		cfg.Mineru.Enabled = true
-		mineruParser, err := parser.NewMineruParser(&cfg.Mineru)
-		if err != nil {
-			slog.Warn("failed to initialize MinerU parser (legacy config)", "error", err)
-		} else {
-			if err := parserRegistry.Register(mineruParser); err != nil {
-				slog.Error("failed to register MinerU parser", "error", err)
-			} else {
-				slog.Info("MinerU parser registered (from legacy config)")
 			}
 		}
 	}

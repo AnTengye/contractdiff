@@ -10,7 +10,6 @@ type Config struct {
 	Server       ServerConfig       `yaml:"server"`
 	Minio        MinioConfig        `yaml:"minio"`
 	Parsers      ParsersConfig      `yaml:"parsers"`   // NEW: Multi-parser config
-	Mineru       MineruConfig       `yaml:"mineru"`    // Keep for backward compatibility
 	Gotenberg    GotenbergConfig    `yaml:"gotenberg"` // NEW: DOCX to PDF conversion
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
@@ -149,12 +148,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Auth.TokenExpireHours == 0 {
 		cfg.Auth.TokenExpireHours = 24
-	}
-
-	// Backward compatibility: if old Mineru config exists but new Parsers.MinerU doesn't
-	if cfg.Parsers.MinerU == nil && cfg.Mineru.APIURL != "" {
-		cfg.Mineru.Enabled = true
-		cfg.Parsers.MinerU = &cfg.Mineru
 	}
 
 	// Parser defaults
