@@ -13,8 +13,9 @@ type Config struct {
 	Gotenberg    GotenbergConfig    `yaml:"gotenberg"` // NEW: DOCX to PDF conversion
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
-	Store        StoreConfig        `yaml:\"store"`
+	Store        StoreConfig        `yaml:\\\"store"`
 	Notification NotificationConfig `yaml:"notification"`
+	Timing       TimingConfig       `yaml:"timing"` // Performance timing and alerting
 	Users        []User             `yaml:"users"`
 }
 
@@ -126,6 +127,14 @@ type FeishuConfig struct {
 	Secret     string `yaml:"secret,omitempty"` // For signed webhooks
 }
 
+type TimingConfig struct {
+	Enabled              bool `yaml:"enabled"`
+	RequestThresholdMs   int  `yaml:"request_threshold_ms"`
+	AsyncThresholdMs     int  `yaml:"async_threshold_ms"`
+	EnableAlert          bool `yaml:"enable_alert"`
+	AlertCooldownMinutes int  `yaml:"alert_cooldown_minutes"`
+}
+
 var GlobalConfig *Config
 
 func Load(path string) (*Config, error) {
@@ -179,6 +188,16 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Store.CacheTTLHours == 0 {
 		cfg.Store.CacheTTLHours = 24
+	}
+
+	if cfg.Timing.RequestThresholdMs == 0 {
+		cfg.Timing.RequestThresholdMs = 2000
+	}
+	if cfg.Timing.AsyncThresholdMs == 0 {
+		cfg.Timing.AsyncThresholdMs = 15000
+	}
+	if cfg.Timing.AlertCooldownMinutes == 0 {
+		cfg.Timing.AlertCooldownMinutes = 5
 	}
 
 	GlobalConfig = &cfg

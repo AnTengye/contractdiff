@@ -69,6 +69,12 @@ notification:
   feishu:
     webhook_url: ""
     secret: ""
+timing:
+  enabled: true
+  request_threshold_ms: 2000      # 同步请求阈值 2s
+  async_threshold_ms: 15000       # 异步处理阈值 15s
+  enable_alert: true              # 启用钉钉告警
+  alert_cooldown_minutes: 5       # 告警冷却 5 分钟
 
 log:
   level: "info"   # debug, info, warn, error

@@ -16,6 +16,7 @@ import (
 	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/AnTengye/contractdiff/backend/pkg/logger"
 	"github.com/AnTengye/contractdiff/backend/pkg/notify"
+	"github.com/AnTengye/contractdiff/backend/pkg/timing"
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/AnTengye/contractdiff/backend/service/converter"
 	"github.com/AnTengye/contractdiff/backend/service/parser"
@@ -102,28 +103,40 @@ func main() {
 	// Initialize contract store with config
 	service.InitContractStore(&cfg.Store)
 
-	// Initialize notification manager and token expiration checker
 	notifyManager := notify.NewManager(&cfg.Notification)
 	tokenChecker := service.NewTokenChecker(cfg, notifyManager)
 	tokenChecker.Start()
 
-	// Initialize handlers
+	var timingAlerter timing.Alerter
+	if cfg.Timing.Enabled && cfg.Timing.EnableAlert {
+		timingAlerter = timing.NewDingTalkAlerter(notifyManager, cfg.Timing.AlertCooldownMinutes)
+		slog.Info("timing alerter initialized", "cooldown_minutes", cfg.Timing.AlertCooldownMinutes)
+	} else {
+		timingAlerter = &timing.NoopAlerter{}
+	}
+
 	authHandler := handler.NewAuthHandler(cfg)
-	contractHandler := handler.NewContractHandler(minioSvc, parserRegistry, gotenbergConv)
+	contractHandler := handler.NewContractHandler(minioSvc, parserRegistry, gotenbergConv, &cfg.Timing, timingAlerter)
 	callbackHandler := handler.NewCallbackHandler(mineruSvc)
 	parserHandler := handler.NewParserHandler(parserRegistry)
 
-	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.New() // Use New() instead of Default() to avoid default middleware
+	router := gin.New()
 
-	// Add custom middleware
-	router.Use(middleware.RequestID())                 // Request ID for tracing
-	router.Use(middleware.Recovery())                  // Panic recovery
-	router.Use(middleware.RequestLogger())             // Access logging
-	router.Use(corsMiddleware())                       // CORS
-	router.Use(cacheMiddleware())                      // Cache control
-	router.Use(middleware.RateLimit(100, time.Minute)) // Rate limiting: 100 requests per minute
+	router.Use(middleware.RequestID())
+	router.Use(middleware.Recovery())
+	router.Use(middleware.RequestLogger())
+	if cfg.Timing.Enabled {
+		timingMiddlewareCfg := timing.NewMiddlewareConfig(&cfg.Timing, timingAlerter)
+		router.Use(timing.Middleware(timingMiddlewareCfg))
+		slog.Info("timing middleware enabled",
+			"request_threshold_ms", cfg.Timing.RequestThresholdMs,
+			"async_threshold_ms", cfg.Timing.AsyncThresholdMs,
+		)
+	}
+	router.Use(corsMiddleware())
+	router.Use(cacheMiddleware())
+	router.Use(middleware.RateLimit(100, time.Minute))
 
 	// Determine static files directory (production: ./static, development: ../frontend/dist)
 	staticDir := "./static/"

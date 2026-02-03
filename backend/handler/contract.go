@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/AnTengye/contractdiff/backend/middleware"
 	"github.com/AnTengye/contractdiff/backend/model"
 	"github.com/AnTengye/contractdiff/backend/pkg/httpclient"
+	"github.com/AnTengye/contractdiff/backend/pkg/timing"
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/AnTengye/contractdiff/backend/service/converter"
 	"github.com/AnTengye/contractdiff/backend/service/parser"
@@ -29,12 +31,16 @@ type ContractHandler struct {
 	converter      *converter.GotenbergConverter
 	store          *service.ContractStore
 	httpClient     *httpclient.Client
+	timingConfig   *config.TimingConfig
+	timingAlerter  timing.Alerter
 }
 
 func NewContractHandler(
 	minioSvc *service.MinioService,
 	parserRegistry *parser.Registry,
 	converter *converter.GotenbergConverter,
+	timingCfg *config.TimingConfig,
+	timingAlerter timing.Alerter,
 ) *ContractHandler {
 	return &ContractHandler{
 		minioService:   minioSvc,
@@ -42,6 +48,8 @@ func NewContractHandler(
 		converter:      converter,
 		store:          service.GetContractStore(),
 		httpClient:     httpclient.New(),
+		timingConfig:   timingCfg,
+		timingAlerter:  timingAlerter,
 	}
 }
 
@@ -285,8 +293,11 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		"parser_type", parserTypeStr,
 	)
 
-	// Process document asynchronously
-	go h.processDocument(contract, selectedParser)
+	traceID := timing.GetTraceID(c)
+	if traceID == "" {
+		traceID = uuid.New().String()
+	}
+	go h.processDocument(contract, selectedParser, traceID, requestID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":          contractID,
@@ -298,12 +309,12 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 }
 
 // processDocument handles document parsing asynchronously with DOCX conversion support
-func (h *ContractHandler) processDocument(contract *model.Contract, selectedParser parser.DocumentParser) {
-	// Add panic recovery
+func (h *ContractHandler) processDocument(contract *model.Contract, selectedParser parser.DocumentParser, traceID, requestID string) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("panic in processDocument",
 				"contract_id", contract.ID,
+				"trace_id", traceID,
 				"panic", r,
 			)
 			h.store.UpdateStatus(contract.ID, model.StatusFailed, fmt.Sprintf("Internal error: %v", r))
@@ -311,41 +322,61 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 	}()
 
 	ctx := context.Background()
-	startTime := time.Now()
+
+	tracker := timing.NewAsyncTracker(
+		traceID,
+		requestID,
+		contract.ID,
+		contract.Tenant,
+		"document_processing",
+		h.timingConfig,
+		h.timingAlerter,
+	)
+	defer tracker.Finish()
 
 	slog.Info("starting document processing",
+		"trace_id", traceID,
 		"contract_id", contract.ID,
 		"parser_type", contract.ParserType,
 		"original_format", contract.OriginalFormat,
 	)
 
-	// Step 1: DOCX to PDF conversion (if needed)
 	fileURLForParser := contract.FileURL
 	if contract.OriginalFormat == "docx" && !selectedParser.CanParse("docx") {
 		slog.Info("converting DOCX to PDF",
+			"trace_id", traceID,
 			"contract_id", contract.ID,
 			"parser_type", contract.ParserType,
 		)
 		h.store.UpdateStatus(contract.ID, model.StatusConverting, "")
 
-		conversionStart := time.Now()
-		pdfContent, err := h.converter.ConvertDOCXFromURL(ctx, contract.FileURL)
+		var pdfContent []byte
+		var conversionDuration time.Duration
+		err := tracker.Track("docx_convert", func() error {
+			conversionStart := time.Now()
+			var err error
+			pdfContent, err = h.converter.ConvertDOCXFromURL(ctx, contract.FileURL)
+			conversionDuration = time.Since(conversionStart)
+			return err
+		})
 		if err != nil {
 			slog.Error("DOCX conversion failed",
+				"trace_id", traceID,
 				"contract_id", contract.ID,
 				"error", err,
 			)
 			h.store.UpdateStatus(contract.ID, model.StatusFailed, "DOCX conversion failed: "+err.Error())
 			return
 		}
-		conversionDuration := time.Since(conversionStart)
 
-		// Upload converted PDF to MinIO
 		pdfObjectName := contract.Tenant + "/" + contract.ID + "/converted.pdf"
-		err = h.minioService.UploadFile(ctx, pdfObjectName,
-			io.NopCloser(bytes.NewReader(pdfContent)), int64(len(pdfContent)), "application/pdf")
+		err = tracker.Track("upload_converted_pdf", func() error {
+			return h.minioService.UploadFile(ctx, pdfObjectName,
+				io.NopCloser(bytes.NewReader(pdfContent)), int64(len(pdfContent)), "application/pdf")
+		})
 		if err != nil {
 			slog.Error("failed to save converted PDF",
+				"trace_id", traceID,
 				"contract_id", contract.ID,
 				"error", err,
 			)
@@ -353,10 +384,10 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 			return
 		}
 
-		// Get presigned URL for converted PDF
 		pdfURL, err := h.minioService.GetPresignedURL(ctx, pdfObjectName)
 		if err != nil {
 			slog.Error("failed to generate PDF URL",
+				"trace_id", traceID,
 				"contract_id", contract.ID,
 				"error", err,
 			)
@@ -371,16 +402,23 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 		h.store.Save(contract)
 
 		slog.Info("DOCX conversion completed",
+			"trace_id", traceID,
 			"contract_id", contract.ID,
 			"duration_ms", conversionDuration.Milliseconds(),
 		)
 	}
 
-	// Step 2: Create parsing task
 	h.store.UpdateStatus(contract.ID, model.StatusProcessing, "")
-	taskID, err := selectedParser.CreateTask(ctx, fileURLForParser, contract.ID)
+
+	var taskID string
+	err := tracker.Track("create_task", func() error {
+		var err error
+		taskID, err = selectedParser.CreateTask(ctx, fileURLForParser, contract.ID)
+		return err
+	})
 	if err != nil {
 		slog.Error("failed to create parser task",
+			"trace_id", traceID,
 			"contract_id", contract.ID,
 			"parser_type", contract.ParserType,
 			"error", err,
@@ -390,30 +428,35 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 	}
 
 	slog.Info("parser task created",
+		"trace_id", traceID,
 		"contract_id", contract.ID,
 		"parser_type", contract.ParserType,
 		"task_id", taskID,
 	)
 
 	contract.TaskID = taskID
-	contract.MineruTaskID = taskID // Backward compatibility
+	contract.MineruTaskID = taskID
 	h.store.Save(contract)
 
-	// Step 3: Poll for result
-	h.pollParserTask(contract, selectedParser, startTime)
+	h.pollParserTask(contract, selectedParser, tracker, traceID)
 }
 
 // pollParserTask polls for task completion (generic for all parsers)
-func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParser parser.DocumentParser, startTime time.Time) {
+func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParser parser.DocumentParser, tracker *timing.Tracker, traceID string) {
 	ctx := context.Background()
-	maxAttempts := 60 // 5 minutes with 5 second intervals
+	maxAttempts := 60
 	interval := 5 * time.Second
 
 	slog.Info("starting task polling",
+		"trace_id", traceID,
 		"contract_id", contract.ID,
 		"task_id", contract.TaskID,
 		"parser_type", contract.ParserType,
 	)
+
+	pollStart := time.Now()
+	var resultURL string
+	var finalState string
 
 	for i := 0; i < maxAttempts; i++ {
 		time.Sleep(interval)
@@ -421,6 +464,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 		status, err := selectedParser.GetTaskStatus(ctx, contract.TaskID)
 		if err != nil {
 			slog.Warn("poll attempt failed",
+				"trace_id", traceID,
 				"contract_id", contract.ID,
 				"attempt", i+1,
 				"error", err,
@@ -429,6 +473,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 		}
 
 		slog.Debug("poll status",
+			"trace_id", traceID,
 			"contract_id", contract.ID,
 			"attempt", i+1,
 			"state", status.State,
@@ -436,92 +481,15 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 
 		switch status.State {
 		case "done", "completed", "success":
-			slog.Info("task completed, fetching result",
-				"contract_id", contract.ID,
-				"result_url", status.ResultURL,
-			)
-
-			var rawData map[string]interface{}
-			var pdfData []byte
-
-			// For MinerU parser, use the enhanced method that extracts both JSON and PDF
-			if mineruParser, ok := selectedParser.(*parser.MineruParser); ok {
-				result, err := mineruParser.FetchResultWithPDF(ctx, status.ResultURL)
-				if err != nil {
-					slog.Error("failed to fetch result with PDF",
-						"contract_id", contract.ID,
-						"error", err,
-					)
-					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
-					return
-				}
-				rawData = result.JSONData
-				pdfData = result.PDFData
-
-				// If PDF was extracted and no ConvertedFileURL exists, upload it to MinIO
-				if len(pdfData) > 0 && contract.ConvertedFileURL == "" {
-					pdfObjectName := fmt.Sprintf("%s/%s/layout.pdf", contract.Tenant, contract.ID)
-					pdfURL, err := h.minioService.UploadBytes(ctx, pdfObjectName, pdfData, "application/pdf")
-					if err != nil {
-						slog.Warn("failed to upload extracted PDF, continuing without it",
-							"contract_id", contract.ID,
-							"error", err,
-						)
-					} else {
-						contract.ConvertedFileURL = pdfURL
-						slog.Info("uploaded extracted PDF from MinerU",
-							"contract_id", contract.ID,
-							"pdf_url", pdfURL,
-							"pdf_size", len(pdfData),
-						)
-					}
-				}
-			} else {
-				// For other parsers, use the standard method
-				var err error
-				rawData, err = selectedParser.FetchResult(ctx, contract.TaskID, status.ResultURL)
-				if err != nil {
-					slog.Error("failed to fetch result",
-						"contract_id", contract.ID,
-						"error", err,
-					)
-					h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
-					return
-				}
-			}
-
-			// Normalize result to unified format
-			normalizedData, err := selectedParser.NormalizeResult(rawData)
-			if err != nil {
-				slog.Error("failed to normalize result",
-					"contract_id", contract.ID,
-					"error", err,
-				)
-				h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to normalize result: "+err.Error())
-				return
-			}
-
-			// Calculate processing duration
-			processingDuration := time.Since(startTime)
-			contract.Metadata.ProcessingDuration = processingDuration.Milliseconds()
-
-			// Update contract with results
-			contract.JSONData = normalizedData
-			contract.RawJSONData = rawData
-			contract.Status = model.StatusCompleted
-			contract.UpdatedAt = time.Now()
-			h.store.Save(contract)
-
-			slog.Info("document processing completed",
-				"contract_id", contract.ID,
-				"total_duration_ms", processingDuration.Milliseconds(),
-				"parser_type", contract.ParserType,
-				"has_pdf", contract.ConvertedFileURL != "",
-			)
-			return
+			resultURL = status.ResultURL
+			finalState = status.State
+			tracker.Record("polling", time.Since(pollStart))
+			goto fetchResult
 
 		case "failed", "error":
+			tracker.Record("polling", time.Since(pollStart))
 			slog.Error("parser task failed",
+				"trace_id", traceID,
 				"contract_id", contract.ID,
 				"error_msg", status.ErrorMessage,
 			)
@@ -530,11 +498,113 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 		}
 	}
 
-	// Timeout
+	tracker.Record("polling", time.Since(pollStart))
 	slog.Error("task polling timeout",
+		"trace_id", traceID,
 		"contract_id", contract.ID,
 	)
 	h.store.UpdateStatus(contract.ID, model.StatusFailed, "Task polling timeout")
+	return
+
+fetchResult:
+	slog.Info("task completed, fetching result",
+		"trace_id", traceID,
+		"contract_id", contract.ID,
+		"state", finalState,
+		"result_url", resultURL,
+	)
+
+	var rawData map[string]interface{}
+	var pdfData []byte
+
+	if mineruParser, ok := selectedParser.(*parser.MineruParser); ok {
+		err := tracker.Track("fetch_result", func() error {
+			result, err := mineruParser.FetchResultWithPDF(ctx, resultURL)
+			if err != nil {
+				return err
+			}
+			rawData = result.JSONData
+			pdfData = result.PDFData
+			return nil
+		})
+		if err != nil {
+			slog.Error("failed to fetch result with PDF",
+				"trace_id", traceID,
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
+			return
+		}
+
+		if len(pdfData) > 0 && contract.ConvertedFileURL == "" {
+			pdfObjectName := fmt.Sprintf("%s/%s/layout.pdf", contract.Tenant, contract.ID)
+			pdfURL, err := h.minioService.UploadBytes(ctx, pdfObjectName, pdfData, "application/pdf")
+			if err != nil {
+				slog.Warn("failed to upload extracted PDF, continuing without it",
+					"trace_id", traceID,
+					"contract_id", contract.ID,
+					"error", err,
+				)
+			} else {
+				contract.ConvertedFileURL = pdfURL
+				slog.Info("uploaded extracted PDF from MinerU",
+					"trace_id", traceID,
+					"contract_id", contract.ID,
+					"pdf_url", pdfURL,
+					"pdf_size", len(pdfData),
+				)
+			}
+		}
+	} else {
+		err := tracker.Track("fetch_result", func() error {
+			var err error
+			rawData, err = selectedParser.FetchResult(ctx, contract.TaskID, resultURL)
+			return err
+		})
+		if err != nil {
+			slog.Error("failed to fetch result",
+				"trace_id", traceID,
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
+			return
+		}
+	}
+
+	var normalizedData map[string]interface{}
+	err := tracker.Track("normalize", func() error {
+		var err error
+		normalizedData, err = selectedParser.NormalizeResult(rawData)
+		return err
+	})
+	if err != nil {
+		slog.Error("failed to normalize result",
+			"trace_id", traceID,
+			"contract_id", contract.ID,
+			"error", err,
+		)
+		h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to normalize result: "+err.Error())
+		return
+	}
+
+	processingDuration := tracker.TotalDuration()
+	contract.Metadata.ProcessingDuration = processingDuration.Milliseconds()
+
+	contract.JSONData = normalizedData
+	contract.RawJSONData = rawData
+	contract.Status = model.StatusCompleted
+	contract.UpdatedAt = time.Now()
+	h.store.Save(contract)
+
+	slog.Info("document processing completed",
+		"trace_id", traceID,
+		"contract_id", contract.ID,
+		"total_duration_ms", processingDuration.Milliseconds(),
+		"parser_type", contract.ParserType,
+		"has_pdf", contract.ConvertedFileURL != "",
+	)
 }
 
 func getMapKeys(m map[string]interface{}) []string {
