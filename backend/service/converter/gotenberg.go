@@ -70,6 +70,10 @@ func (c *GotenbergConverter) ConvertDOCXToPDF(ctx context.Context, fileContent [
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
+	if c.config.BasicAuthUser != "" || c.config.BasicAuthPassword != "" {
+		req.SetBasicAuth(c.config.BasicAuthUser, c.config.BasicAuthPassword)
+	}
+
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -123,6 +127,10 @@ func (c *GotenbergConverter) IsAvailable(ctx context.Context) bool {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.config.APIURL+"/health", nil)
 	if err != nil {
 		return false
+	}
+
+	if c.config.BasicAuthUser != "" || c.config.BasicAuthPassword != "" {
+		req.SetBasicAuth(c.config.BasicAuthUser, c.config.BasicAuthPassword)
 	}
 
 	resp, err := c.httpClient.Do(req)

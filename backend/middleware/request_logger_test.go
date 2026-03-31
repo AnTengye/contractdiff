@@ -72,7 +72,7 @@ func TestRequestLoggerWithQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	slog.SetDefault(slog.New(handler))
 
 	router := gin.New()

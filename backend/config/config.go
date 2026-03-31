@@ -13,7 +13,7 @@ type Config struct {
 	Gotenberg    GotenbergConfig    `yaml:"gotenberg"` // NEW: DOCX to PDF conversion
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
-	Store        StoreConfig        `yaml:\\\"store"`
+	Store        StoreConfig        `yaml:"store"`
 	Notification NotificationConfig `yaml:"notification"`
 	Timing       TimingConfig       `yaml:"timing"` // Performance timing and alerting
 	Users        []User             `yaml:"users"`
@@ -62,9 +62,15 @@ type PaddleOCRConfig struct {
 	Enabled                   bool   `yaml:"enabled"`
 	APIURL                    string `yaml:"api_url"`
 	APIToken                  string `yaml:"api_token"`
-	UseDocOrientationClassify bool   `yaml:"use_doc_orientation_classify"` // Optional: document orientation detection
-	UseDocUnwarping           bool   `yaml:"use_doc_unwarping"`            // Optional: document unwarping
-	UseChartRecognition       bool   `yaml:"use_chart_recognition"`        // Optional: chart recognition
+	UseDocOrientationClassify *bool  `yaml:"use_doc_orientation_classify"` // Optional: document orientation detection
+	UseDocUnwarping           *bool  `yaml:"use_doc_unwarping"`            // Optional: document unwarping
+	UseChartRecognition       *bool  `yaml:"use_chart_recognition"`        // Optional: chart recognition
+	UseLayoutDetection        *bool  `yaml:"use_layout_detection"`         // Optional: layout detection, default true
+	MergeTables               *bool  `yaml:"merge_tables"`                 // Optional: merge tables (VL feature)
+	PrettifyMarkdown          *bool  `yaml:"prettify_markdown"`            // Optional: output prettified markdown
+	PromptLabel               string `yaml:"prompt_label"`                 // Optional: prompt label for VL (e.g., 'ocr', 'formula', 'table')
+	RestructurePages          *bool  `yaml:"restructure_pages"`            // Optional: restructure multi-page pdfs
+	Visualize                 *bool  `yaml:"visualize"`                    // Optional: return images for visualization
 }
 
 // GOTOCRConfig for GOT-OCR parser
@@ -87,9 +93,11 @@ type RAGFlowConfig struct {
 
 // GotenbergConfig for DOCX to PDF conversion
 type GotenbergConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	APIURL  string `yaml:"api_url"` // e.g., "http://gotenberg:3000"
-	Timeout int    `yaml:"timeout"` // Conversion timeout in seconds
+	Enabled           bool   `yaml:"enabled"`
+	APIURL            string `yaml:"api_url"`             // e.g., "http://gotenberg:3000"
+	BasicAuthUser     string `yaml:"basic_auth_user"`     // Optional: Basic Auth username
+	BasicAuthPassword string `yaml:"basic_auth_password"` // Optional: Basic Auth password
+	Timeout           int    `yaml:"timeout"`             // Conversion timeout in seconds
 }
 
 type AuthConfig struct {
@@ -137,6 +145,8 @@ type TimingConfig struct {
 
 var GlobalConfig *Config
 
+func ptrBool(b bool) *bool { return &b }
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -172,7 +182,26 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// Gotenberg defaults
+	if cfg.Parsers.PaddleOCR != nil {
+		if cfg.Parsers.PaddleOCR.UseLayoutDetection == nil {
+			cfg.Parsers.PaddleOCR.UseLayoutDetection = ptrBool(true) // 关闭 LayoutDetection 才能解锁 VL 模型对跨页表格的认知和段落感知
+		}
+		if cfg.Parsers.PaddleOCR.MergeTables == nil {
+			cfg.Parsers.PaddleOCR.MergeTables = ptrBool(true) // 合同场景非常需要合并跨页表格
+		}
+		if cfg.Parsers.PaddleOCR.RestructurePages == nil {
+			cfg.Parsers.PaddleOCR.RestructurePages = ptrBool(true) // 合同多页连贯性重构
+		}
+		if cfg.Parsers.PaddleOCR.PrettifyMarkdown == nil {
+			cfg.Parsers.PaddleOCR.PrettifyMarkdown = ptrBool(true) // 美化带表格的文字混排
+		}
+		if cfg.Parsers.PaddleOCR.UseDocOrientationClassify == nil {
+			cfg.Parsers.PaddleOCR.UseDocOrientationClassify = ptrBool(true) // 由于常遇到扫描件，默认开启方向纠正
+		}
+		if cfg.Parsers.PaddleOCR.UseDocUnwarping == nil {
+			cfg.Parsers.PaddleOCR.UseDocUnwarping = ptrBool(true) // 由于常遇到扫描件，倾斜矫正开启
+		}
+	}
 	if cfg.Gotenberg.Timeout == 0 {
 		cfg.Gotenberg.Timeout = 60
 	}

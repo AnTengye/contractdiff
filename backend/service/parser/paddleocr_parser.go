@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,15 +35,15 @@ func (p *PaddleOCRParser) GetCapabilities() ParserCapabilities {
 	return ParserCapabilities{
 		Name:             "PaddleOCR",
 		Type:             ParserTypePaddleOCR,
-		SupportedFormats: []string{"pdf"},
+		SupportedFormats: []string{"pdf", "jpg", "jpeg", "png"},
 		MaxFileSize:      20 * 1024 * 1024,
-		Features:         []string{"ocr", "text_detection", "text_recognition", "multi_language"},
+		Features:         []string{"ocr", "text_detection", "text_recognition", "multi_language", "table_recognition"},
 		Description:      "百度 PaddleOCR 文本识别，支持中英文混合识别",
 	}
 }
 
 func (p *PaddleOCRParser) CanParse(format string) bool {
-	return format == "pdf"
+	return format == "pdf" || format == "jpg" || format == "jpeg" || format == "png"
 }
 
 func (p *PaddleOCRParser) CreateTask(ctx context.Context, fileURL, documentID string) (string, error) {
@@ -74,20 +75,46 @@ func (p *PaddleOCRParser) CreateTask(ctx context.Context, fileURL, documentID st
 		"document_id", documentID,
 		"encoding_duration_ms", time.Since(encodeStart).Milliseconds())
 
-	reqBody := map[string]interface{}{
-		"file":               fileData,
-		"fileType":           0,
-		"useLayoutDetection": true, // 是否在推理时使用版面区域检测排序模块，开启后，可以自动检测文档中不同区域并排序。
+	contentType := http.DetectContentType(fileBytes)
+	fileType := 0
+	if strings.HasPrefix(contentType, "image/") {
+		fileType = 1
 	}
 
-	if p.config.UseDocOrientationClassify {
-		reqBody["useDocOrientationClassify"] = true
+	reqBody := map[string]interface{}{
+		"file":     fileData,
+		"fileType": fileType,
 	}
-	if p.config.UseDocUnwarping {
-		reqBody["useDocUnwarping"] = true
+
+	if p.config.UseLayoutDetection != nil {
+		reqBody["useLayoutDetection"] = *p.config.UseLayoutDetection
+	} else {
+		reqBody["useLayoutDetection"] = true // default for backwards compatibility
 	}
-	if p.config.UseChartRecognition {
-		reqBody["useChartRecognition"] = true
+
+	if p.config.UseDocOrientationClassify != nil {
+		reqBody["useDocOrientationClassify"] = *p.config.UseDocOrientationClassify
+	}
+	if p.config.UseDocUnwarping != nil {
+		reqBody["useDocUnwarping"] = *p.config.UseDocUnwarping
+	}
+	if p.config.UseChartRecognition != nil {
+		reqBody["useChartRecognition"] = *p.config.UseChartRecognition
+	}
+	if p.config.PromptLabel != "" {
+		reqBody["promptLabel"] = p.config.PromptLabel
+	}
+	if p.config.MergeTables != nil {
+		reqBody["mergeTables"] = *p.config.MergeTables
+	}
+	if p.config.PrettifyMarkdown != nil {
+		reqBody["prettifyMarkdown"] = *p.config.PrettifyMarkdown
+	}
+	if p.config.RestructurePages != nil {
+		reqBody["restructurePages"] = *p.config.RestructurePages
+	}
+	if p.config.Visualize != nil {
+		reqBody["visualize"] = *p.config.Visualize
 	}
 
 	jsonData, err := json.Marshal(reqBody)

@@ -71,9 +71,11 @@ func TestCalculateDaysRemaining(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Mineru: config.MineruConfig{
-					TokenCreatedAt: tt.tokenCreatedAt,
-					TokenValidDays: tt.tokenValidDays,
+				Parsers: config.ParsersConfig{
+					MinerU: &config.MineruConfig{
+						TokenCreatedAt: tt.tokenCreatedAt,
+						TokenValidDays: tt.tokenValidDays,
+					},
 				},
 			}
 			checker := NewTokenChecker(cfg, nil)
@@ -179,10 +181,12 @@ func TestShouldNotify(t *testing.T) {
 
 func TestTokenChecker_BuildNotificationMessage(t *testing.T) {
 	cfg := &config.Config{
-		Mineru: config.MineruConfig{
-			TokenCreatedAt: "2026-01-01T00:00:00+08:00",
-			TokenValidDays: 14,
-		},
+				Parsers: config.ParsersConfig{
+					MinerU: &config.MineruConfig{
+						TokenCreatedAt: "2026-01-01T00:00:00+08:00",
+						TokenValidDays: 14,
+					},
+				},
 	}
 	checker := NewTokenChecker(cfg, nil)
 
@@ -207,9 +211,11 @@ func TestTokenChecker_BuildNotificationMessage(t *testing.T) {
 
 func TestTokenChecker_StartStop(t *testing.T) {
 	cfg := &config.Config{
-		Mineru: config.MineruConfig{
-			TokenCreatedAt: "2026-01-01T00:00:00+08:00",
-			TokenValidDays: 14,
+		Parsers: config.ParsersConfig{
+			MinerU: &config.MineruConfig{
+				TokenCreatedAt: "2026-01-01T00:00:00+08:00",
+				TokenValidDays: 14,
+			},
 		},
 		Notification: config.NotificationConfig{
 			CheckIntervalHours: 12,
@@ -233,8 +239,10 @@ func TestTokenChecker_StartStop(t *testing.T) {
 
 func TestTokenChecker_NoConfig(t *testing.T) {
 	cfg := &config.Config{
-		Mineru: config.MineruConfig{
-			// No TokenCreatedAt configured
+		Parsers: config.ParsersConfig{
+			MinerU: &config.MineruConfig{
+				// No TokenCreatedAt configured
+			},
 		},
 		Notification: config.NotificationConfig{
 			CheckIntervalHours: 12,

@@ -27,9 +27,16 @@ parsers:
     enabled: false
     api_url: "https://your-paddleocr-api.com/layout-parsing"
     api_token: "xxx"
-    use_doc_orientation_classify: false  # Optional: document orientation detection
-    use_doc_unwarping: false             # Optional: document unwarping
-    use_chart_recognition: false         # Optional: chart recognition
+    # -- PaddleOCR-VL-1.5 Advanced Settings --
+    # Leave these commented out to use the optimal system defaults for contract documents.
+    # use_layout_detection: false          # Set to false to enable VL structural understanding
+    # merge_tables: true                   # Merge tables across pages
+    # restructure_pages: true              # Restructure multi-page pdfs
+    # prettify_markdown: true              # Output prettified markdown
+    # use_doc_orientation_classify: true   # Auto-fix document orientation
+    # use_doc_unwarping: true              # Auto-fix document skew/warp
+    # use_chart_recognition: false         # Turn on to parse charts
+    # prompt_label: "ocr"                  # Specific prompt (ocr, table, formula, chart)
 
   got_ocr:
     enabled: false
@@ -49,6 +56,8 @@ parsers:
 gotenberg:
   enabled: false
   api_url: "http://gotenberg:3000"
+  basic_auth_user: ""
+  basic_auth_password: ""
   timeout: 60  # Conversion timeout in seconds
 
 # Backward compatibility - old mineru config (will be migrated to parsers.mineru)
