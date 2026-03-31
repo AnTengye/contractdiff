@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"time"
 
@@ -36,6 +37,9 @@ func NewWithOptions(timeout time.Duration, retryCount int) *Client {
 		SetRetryCount(retryCount).
 		SetRetryWaitTime(1 * time.Second).
 		SetRetryMaxWaitTime(5 * time.Second).
+		SetTLSClientConfig(&tls.Config{
+			InsecureSkipVerify: true,
+		}).
 		AddRetryCondition(func(r *resty.Response, err error) bool {
 			// Retry on network errors
 			if err != nil {
