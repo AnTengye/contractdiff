@@ -70,6 +70,13 @@ func (p *MineruParser) GetTaskStatus(ctx context.Context, taskID string) (*TaskS
 		State:        status.Data.State,
 		ResultURL:    status.Data.FullZipURL,
 		ErrorMessage: status.Data.ErrorMsg,
+		RawData: map[string]interface{}{
+			"trace_id":      status.TraceID,
+			"task_id":       status.Data.TaskID,
+			"data_id":       status.Data.DataID,
+			"model_version": status.Data.ModelVersion,
+			"api_message":   status.Message,
+		},
 	}
 
 	// Try to provide a user-friendly error message if available
@@ -86,6 +93,11 @@ func (p *MineruParser) GetTaskStatus(ctx context.Context, taskID string) (*TaskS
 		taskStatus.Progress = &ProgressInfo{
 			ProcessedPages: status.Data.ExtractProgress.ExtractedPages,
 			TotalPages:     status.Data.ExtractProgress.TotalPages,
+		}
+		taskStatus.RawData["extract_progress"] = map[string]interface{}{
+			"extracted_pages": status.Data.ExtractProgress.ExtractedPages,
+			"total_pages":     status.Data.ExtractProgress.TotalPages,
+			"start_time":      status.Data.ExtractProgress.StartTime,
 		}
 
 		// Parse start time if available

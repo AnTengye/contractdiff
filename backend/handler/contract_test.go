@@ -10,6 +10,7 @@ import (
 
 	"github.com/AnTengye/contractdiff/backend/model"
 	"github.com/AnTengye/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/service/parser"
 	"github.com/gin-gonic/gin"
 )
 
@@ -235,6 +236,71 @@ func TestContractHandlerDelete(t *testing.T) {
 				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
 		})
+	}
+}
+
+func TestBuildParserStatusContext(t *testing.T) {
+	startTime := time.Date(2026, 5, 9, 16, 28, 3, 0, time.FixedZone("CST", 8*3600))
+	status := &parser.TaskStatus{
+		State:        "failed",
+		ErrorMessage: "解析失败，请稍后重试",
+		Progress: &parser.ProgressInfo{
+			ProcessedPages: 2,
+			TotalPages:     5,
+			StartTime:      startTime,
+		},
+		RawData: map[string]interface{}{
+			"trace_id":      "mineru-trace-1",
+			"task_id":       "task-123",
+			"data_id":       "doc-456",
+			"model_version": "vlm",
+			"api_message":   "ok",
+			"extract_progress": map[string]interface{}{
+				"extracted_pages": 2,
+				"total_pages":     5,
+			},
+		},
+	}
+
+	context := buildParserStatusContext(status)
+	if context["state"] != "failed" {
+		t.Fatalf("expected failed state, got %#v", context["state"])
+	}
+	if context["error_message"] != "解析失败，请稍后重试" {
+		t.Fatalf("expected error_message, got %#v", context["error_message"])
+	}
+	if context["trace_id"] != "mineru-trace-1" {
+		t.Fatalf("expected trace_id, got %#v", context["trace_id"])
+	}
+	if context["data_id"] != "doc-456" {
+		t.Fatalf("expected data_id, got %#v", context["data_id"])
+	}
+	if context["model_version"] != "vlm" {
+		t.Fatalf("expected model_version, got %#v", context["model_version"])
+	}
+	if context["api_message"] != "ok" {
+		t.Fatalf("expected api_message, got %#v", context["api_message"])
+	}
+	if context["progress_start_time"] != startTime.Format(time.RFC3339) {
+		t.Fatalf("expected progress_start_time, got %#v", context["progress_start_time"])
+	}
+
+	progress, ok := context["progress"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected progress map, got %#v", context["progress"])
+	}
+	if progress["processed_pages"] != 2 {
+		t.Fatalf("expected processed_pages 2, got %#v", progress["processed_pages"])
+	}
+	if progress["total_pages"] != 5 {
+		t.Fatalf("expected total_pages 5, got %#v", progress["total_pages"])
+	}
+}
+
+func TestBuildParserFailureMessageFallsBackToState(t *testing.T) {
+	msg := buildParserFailureMessage(&parser.TaskStatus{State: "failed"})
+	if msg != "Parser task failed (state=failed)" {
+		t.Fatalf("unexpected fallback message: %q", msg)
 	}
 }
 

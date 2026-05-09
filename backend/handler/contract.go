@@ -457,6 +457,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 	pollStart := time.Now()
 	var resultURL string
 	var finalState string
+	var lastStatus *parser.TaskStatus
 
 	for i := 0; i < maxAttempts; i++ {
 		time.Sleep(interval)
@@ -466,17 +467,23 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 			slog.Warn("poll attempt failed",
 				"trace_id", traceID,
 				"contract_id", contract.ID,
+				"task_id", contract.TaskID,
+				"parser_type", contract.ParserType,
 				"attempt", i+1,
+				"max_attempts", maxAttempts,
 				"error", err,
 			)
 			continue
 		}
+		lastStatus = status
 
 		slog.Debug("poll status",
 			"trace_id", traceID,
 			"contract_id", contract.ID,
+			"task_id", contract.TaskID,
 			"attempt", i+1,
 			"state", status.State,
+			"status_context", buildParserStatusContext(status),
 		)
 
 		switch status.State {
@@ -488,12 +495,17 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 
 		case "failed", "error":
 			tracker.Record("polling", time.Since(pollStart))
+			failureMessage := buildParserFailureMessage(status)
 			slog.Error("parser task failed",
 				"trace_id", traceID,
 				"contract_id", contract.ID,
-				"error_msg", status.ErrorMessage,
+				"task_id", contract.TaskID,
+				"parser_type", contract.ParserType,
+				"attempt", i+1,
+				"error_msg", failureMessage,
+				"status_context", buildParserStatusContext(status),
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, status.ErrorMessage)
+			h.store.UpdateStatus(contract.ID, model.StatusFailed, failureMessage)
 			return
 		}
 	}
@@ -502,6 +514,10 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 	slog.Error("task polling timeout",
 		"trace_id", traceID,
 		"contract_id", contract.ID,
+		"task_id", contract.TaskID,
+		"parser_type", contract.ParserType,
+		"attempts", maxAttempts,
+		"last_status_context", buildParserStatusContext(lastStatus),
 	)
 	h.store.UpdateStatus(contract.ID, model.StatusFailed, "Task polling timeout")
 	return
@@ -605,6 +621,62 @@ fetchResult:
 		"parser_type", contract.ParserType,
 		"has_pdf", contract.ConvertedFileURL != "",
 	)
+}
+
+func buildParserFailureMessage(status *parser.TaskStatus) string {
+	if status == nil {
+		return "Parser task failed"
+	}
+
+	if strings.TrimSpace(status.ErrorMessage) != "" {
+		return status.ErrorMessage
+	}
+
+	context := buildParserStatusContext(status)
+	if state, ok := context["state"].(string); ok && state != "" {
+		return fmt.Sprintf("Parser task failed (state=%s)", state)
+	}
+
+	return "Parser task failed"
+}
+
+func buildParserStatusContext(status *parser.TaskStatus) map[string]interface{} {
+	if status == nil {
+		return nil
+	}
+
+	context := map[string]interface{}{
+		"state": status.State,
+	}
+	if status.ResultURL != "" {
+		context["result_url"] = status.ResultURL
+	}
+	if status.ErrorMessage != "" {
+		context["error_message"] = status.ErrorMessage
+	}
+	if status.Progress != nil {
+		context["progress"] = map[string]interface{}{
+			"processed_pages": status.Progress.ProcessedPages,
+			"total_pages":     status.Progress.TotalPages,
+		}
+		if !status.Progress.StartTime.IsZero() {
+			context["progress_start_time"] = status.Progress.StartTime.Format(time.RFC3339)
+		}
+	}
+	if status.RawData == nil {
+		return context
+	}
+
+	for _, key := range []string{"trace_id", "task_id", "data_id", "model_version", "api_message"} {
+		if value, ok := status.RawData[key]; ok && value != nil && value != "" {
+			context[key] = value
+		}
+	}
+	if progress, ok := status.RawData["extract_progress"]; ok && progress != nil {
+		context["extract_progress"] = progress
+	}
+
+	return context
 }
 
 func getMapKeys(m map[string]interface{}) []string {
