@@ -8,6 +8,8 @@ import { getCurrentUser, getParsers } from '@/services/api';
 import { isAuthenticated, redirectToLogin, clearAuth, getUser } from '@/utils/auth';
 import { getRequiredElement, getElementById, toggle } from '@/utils/dom';
 
+const DEFAULT_PARSER = { id: 'mineru', name: 'MinerU' };
+
 // Check authentication on load
 async function checkAuth(): Promise<boolean> {
   if (!isAuthenticated()) {
@@ -36,20 +38,32 @@ async function checkAuth(): Promise<boolean> {
 
 // Load available parsers
 async function loadParsers(): Promise<void> {
+  const leftSelector = getElementById<HTMLSelectElement>('parser-selector-left');
+  const rightSelector = getElementById<HTMLSelectElement>('parser-selector-right');
+
   try {
     const parsers = await getParsers();
-
-    const leftSelector = getElementById<HTMLSelectElement>('parser-selector-left');
-    const rightSelector = getElementById<HTMLSelectElement>('parser-selector-right');
-
-    const options = parsers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-    const defaultOption = '<option value="">默认解析器</option>';
-
-    if (leftSelector) leftSelector.innerHTML = defaultOption + options;
-    if (rightSelector) rightSelector.innerHTML = defaultOption + options;
+    renderParserOptions([leftSelector, rightSelector], parsers);
   } catch (error) {
     console.warn('Failed to load parsers:', error);
+    renderParserOptions([leftSelector, rightSelector], []);
   }
+}
+
+function renderParserOptions(selectors: Array<HTMLSelectElement | null>, parsers: Array<{ id: string; name: string }>): void {
+  const availableParsers = parsers.length > 0 ? parsers : [DEFAULT_PARSER];
+  const options = availableParsers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const selectedParserId = availableParsers.some(p => p.id === DEFAULT_PARSER.id)
+    ? DEFAULT_PARSER.id
+    : availableParsers[0]?.id;
+
+  selectors.forEach(selector => {
+    if (!selector) return;
+    selector.innerHTML = options;
+    if (selectedParserId) {
+      selector.value = selectedParserId;
+    }
+  });
 }
 
 // Initialize application
