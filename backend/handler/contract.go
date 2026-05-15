@@ -519,7 +519,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 		"attempts", maxAttempts,
 		"last_status_context", buildParserStatusContext(lastStatus),
 	)
-	h.store.UpdateStatus(contract.ID, model.StatusFailed, "Task polling timeout")
+	h.store.UpdateStatus(contract.ID, model.StatusFailed, buildParserTimeoutMessage(lastStatus, maxAttempts))
 	return
 
 fetchResult:
@@ -638,6 +638,29 @@ func buildParserFailureMessage(status *parser.TaskStatus) string {
 	}
 
 	return "Parser task failed"
+}
+
+func buildParserTimeoutMessage(status *parser.TaskStatus, attempts int) string {
+	message := fmt.Sprintf("Task polling timeout after %d attempts", attempts)
+	context := buildParserStatusContext(status)
+	if len(context) == 0 {
+		return message
+	}
+
+	parts := make([]string, 0, 5)
+	if state, ok := context["state"].(string); ok && strings.TrimSpace(state) != "" {
+		parts = append(parts, "last state="+state)
+	}
+	for _, key := range []string{"api_message", "data_id", "task_id", "trace_id"} {
+		if value, ok := context[key]; ok && value != nil && fmt.Sprint(value) != "" {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, value))
+		}
+	}
+	if len(parts) == 0 {
+		return message
+	}
+
+	return fmt.Sprintf("%s (%s)", message, strings.Join(parts, ", "))
 }
 
 func buildParserStatusContext(status *parser.TaskStatus) map[string]interface{} {

@@ -16,6 +16,7 @@ interface UploadResponse {
 interface ContractStatusResponse {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
+  error_msg?: string;
 }
 
 interface ContractDetailResponse {
@@ -181,7 +182,7 @@ export async function pollForResult(
       }
 
       if (status.status === 'failed') {
-        const error = new Error(status.error || 'Processing failed');
+        const error = new Error(status.error_msg || status.error || 'Processing failed');
         (error as any).isPermanent = true;
         throw error;
       }

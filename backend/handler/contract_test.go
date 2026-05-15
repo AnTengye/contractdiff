@@ -304,6 +304,24 @@ func TestBuildParserFailureMessageFallsBackToState(t *testing.T) {
 	}
 }
 
+func TestBuildParserTimeoutMessageIncludesLastStatusContext(t *testing.T) {
+	status := &parser.TaskStatus{
+		State: "pending",
+		RawData: map[string]interface{}{
+			"api_message": "ok",
+			"data_id":     "contract-123",
+			"task_id":     "task-456",
+			"trace_id":    "trace-789",
+		},
+	}
+
+	msg := buildParserTimeoutMessage(status, 60)
+	expected := "Task polling timeout after 60 attempts (last state=pending, api_message=ok, data_id=contract-123, task_id=task-456, trace_id=trace-789)"
+	if msg != expected {
+		t.Fatalf("unexpected timeout message:\nwant: %q\n got: %q", expected, msg)
+	}
+}
+
 func TestGetMapKeys(t *testing.T) {
 	m := map[string]interface{}{
 		"key1": "value1",
