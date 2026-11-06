@@ -9,14 +9,17 @@ import (
 
 // ParserHandler handles parser-related API requests
 type ParserHandler struct {
-	registry *parser.Registry
+	registry      *parser.Registry
+	docxAvailable bool
 }
 
 // NewParserHandler creates a new parser handler
-func NewParserHandler(registry *parser.Registry) *ParserHandler {
-	return &ParserHandler{
-		registry: registry,
+func NewParserHandler(registry *parser.Registry, docxAvailable ...bool) *ParserHandler {
+	available := false
+	if len(docxAvailable) > 0 {
+		available = docxAvailable[0]
 	}
+	return &ParserHandler{registry: registry, docxAvailable: available}
 }
 
 // ListParsers returns all available parsers and their capabilities
@@ -25,8 +28,9 @@ func (h *ParserHandler) ListParsers(c *gin.Context) {
 	capabilities := h.registry.GetCapabilities()
 
 	c.JSON(http.StatusOK, gin.H{
-		"parsers": capabilities,
-		"count":   len(capabilities),
+		"parsers":        capabilities,
+		"count":          len(capabilities),
+		"docx_available": h.docxAvailable,
 	})
 }
 

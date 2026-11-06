@@ -6,15 +6,19 @@ services:
       dockerfile: Dockerfile
     container_name: contractdiff
     ports:
-      - "8080:8080"
+      - "8080:28080"
     volumes:
       - ./backend/config.yaml:/app/config.yaml:ro
+      - contractdiff-data:/app/data
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:28080/"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+
+volumes:
+  contractdiff-data:

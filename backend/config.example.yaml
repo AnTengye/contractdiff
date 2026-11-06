@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 28080
 
 minio:
   endpoint: "xxx.temp.com"
@@ -18,6 +18,7 @@ parsers:
     api_url: "https://mineru.net/api/v4"
     api_token: "xxx"
     model_version: "vlm"
+    max_result_size_bytes: 52428800
     callback_url: ""
     seed: "contractdiff-seed"
     token_created_at: "2026-01-01T00:00:00+08:00"  # RFC3339 format
@@ -59,6 +60,10 @@ gotenberg:
   basic_auth_user: ""
   basic_auth_password: ""
   timeout: 60  # Conversion timeout in seconds
+  revision: "gotenberg-pdf-v1"  # Bump when fonts, mirror, or export settings change
+  max_input_bytes: 52428800
+  max_output_bytes: 52428800
+  read_rate_bytes_per_second: 10485760
 
 # Backward compatibility - old mineru config (will be migrated to parsers.mineru)
 mineru:
@@ -104,3 +109,8 @@ users:
     password: "user123"
     tenant: "tenant1"
 
+
+# Persistent feedback archive. Reviewers can analyze cases in their own tenant.
+feedback:
+  db_path: "data/feedback.db"
+  reviewers: [] # Add existing usernames to enable the analysis workflow

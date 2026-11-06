@@ -1,254 +1,254 @@
-// Text extractor - extracts all text content from contract data
-// and maintains position mapping for later rendering
-
 import type {
-  ContractData,
   Block,
+  ContractData,
   TextSegment,
+  TextUnit,
+  Bbox,
+  CoordinatePrecision,
+  TableCell,
 } from './types';
 
-// Default page size (A4 at 72 DPI) - used when page_size is not available
-const DEFAULT_PAGE_SIZE: [number, number] = [595, 842];
-
-/**
- * Extract all text from a contract document
- * Returns concatenated text and segment mapping for position tracking
- */
-export function extractText(data: ContractData): {
-  fullText: string;
-  segments: TextSegment[];
-} {
-  const segments: TextSegment[] = [];
-  let currentOffset = 0;
-
-  // Build page size map from pdf_info if available
-  const pageSizeMap = buildPageSizeMap(data);
-
-  // Handle normalized format (paragraphs array)
-  if (data.paragraphs && Array.isArray(data.paragraphs)) {
-    console.log('[TextExtractor] Using normalized format, blocks:', data.paragraphs.length);
-    
-    for (let blockIdx = 0; blockIdx < data.paragraphs.length; blockIdx++) {
-      const block = data.paragraphs[blockIdx]!;
-      const pageIdx = (block.page || 1) - 1; // Convert to 0-indexed
-      const pageSize = pageSizeMap.get(pageIdx) || DEFAULT_PAGE_SIZE;
-      
-      const extracted = extractBlockSegments(block, pageIdx, blockIdx, currentOffset, pageSize);
-      segments.push(...extracted.segments);
-      currentOffset = extracted.nextOffset;
-    }
-  }
-  
-  // Handle raw MinerU format (pdf_info)
-  else if (data.pdf_info && Array.isArray(data.pdf_info)) {
-    console.log('[TextExtractor] Using pdf_info format, pages:', data.pdf_info.length);
-    
-    // Sort pages by page_idx to ensure correct order
-    const sortedPages = [...data.pdf_info].sort((a, b) => a.page_idx - b.page_idx);
-    
-    let globalBlockIdx = 0;
-    
-    for (const page of sortedPages) {
-      const pageIdx = page.page_idx;
-      const pageSize = (page.page_size || DEFAULT_PAGE_SIZE) as [number, number];
-      const blocks = page.para_blocks || [];
-      
-      for (const block of blocks) {
-        const extracted = extractBlockSegments(
-          block, 
-          pageIdx, 
-          globalBlockIdx, 
-          currentOffset,
-          pageSize
-        );
-        segments.push(...extracted.segments);
-        currentOffset = extracted.nextOffset;
-        globalBlockIdx++;
-      }
-    }
-  }
-  
-  // Concatenate all text
-  const fullText = segments.map(s => s.text).join('');
-  
-  console.log(`[TextExtractor] Extracted ${segments.length} segments, total chars: ${fullText.length}`);
-  
-  return { fullText, segments };
-}
-
-/**
- * Build a map of page index to page size from pdf_info
- */
-function buildPageSizeMap(data: ContractData): Map<number, [number, number]> {
-  const map = new Map<number, [number, number]>();
-  
-  if (data.pdf_info && Array.isArray(data.pdf_info)) {
-    for (const page of data.pdf_info) {
-      if (page.page_size) {
-        map.set(page.page_idx, page.page_size as [number, number]);
-      }
-    }
-  }
-  
-  const metadata = (data as any).metadata;
-  if (metadata?.page_sizes && Array.isArray(metadata.page_sizes)) {
-    for (const ps of metadata.page_sizes) {
-      if (ps.width && ps.height) {
-        map.set(ps.page_idx, [ps.width, ps.height] as [number, number]);
-      }
-    }
-  }
-  
-  return map;
-}
-
-/**
- * Extract text segments from a single block
- */
-const IGNORED_BLOCK_TYPES = new Set(['header', 'footer', 'page_header', 'page_footer', 'page_number']);
-
-function extractBlockSegments(
-  block: Block,
-  pageIdx: number,
-  blockIdx: number,
-  startOffset: number,
-  pageSize?: [number, number]
-): { segments: TextSegment[]; nextOffset: number } {
-  const segments: TextSegment[] = [];
-  let currentOffset = startOffset;
-  
-  if (block.type && IGNORED_BLOCK_TYPES.has(block.type)) {
-    return { segments, nextOffset: currentOffset };
-  }
-  
-  // Handle nested blocks first (like lists)
-  if (block.blocks && block.blocks.length > 0) {
-    for (const subBlock of block.blocks) {
-      const extracted = extractBlockSegments(
-        subBlock,
+export function extractText(
+  data: ContractData,
+  options: { ignoreHeaders?: boolean } = {}
+): { fullText: string; segments: TextSegment[]; units: TextUnit[] } {
+  const segments: TextSegment[] = [],
+    units: TextUnit[] = [];
+  const pageSizes = new Map<number, [number, number]>();
+  for (const page of data.pdf_info ?? [])
+    if (page.page_size) pageSizes.set(page.page_idx, page.page_size);
+  for (const p of data.metadata?.page_sizes ?? [])
+    if (p.width > 0 && p.height > 0) pageSizes.set(p.page_idx, [p.width, p.height]);
+  let offset = 0,
+    tableIndex = 0;
+  const ignored = new Set(['header', 'footer', 'page_header', 'page_footer', 'page_number']);
+  const blocks: Array<{ block: Block; pageIdx: number }> = data.paragraphs
+    ? data.paragraphs.map((block) => ({ block, pageIdx: (block.page ?? 1) - 1 }))
+    : [...(data.pdf_info ?? [])]
+        .sort((a, b) => a.page_idx - b.page_idx)
+        .flatMap((p) => (p.para_blocks ?? []).map((block) => ({ block, pageIdx: p.page_idx })));
+  function addUnit(
+    parts: Array<{
+      text: string;
+      bbox?: Bbox;
+      precision: CoordinatePrecision;
+      line: number;
+      span: number;
+    }>,
+    pageIdx: number,
+    blockIdx: number,
+    kind: string,
+    structure = ''
+  ) {
+    if (!parts.some((p) => p.text.trim())) return;
+    const startOffset = offset;
+    for (const p of parts) {
+      if (!p.text) continue;
+      segments.push({
+        text: p.text,
         pageIdx,
         blockIdx,
-        currentOffset,
-        pageSize
-      );
-      segments.push(...extracted.segments);
-      currentOffset = extracted.nextOffset;
+        lineIdx: p.line,
+        spanIdx: p.span,
+        bbox: p.bbox,
+        pageSize: pageSizes.get(pageIdx),
+        precision: p.precision,
+        startOffset: offset,
+        endOffset: offset + p.text.length,
+      });
+      offset += p.text.length;
     }
-    return { segments, nextOffset: currentOffset };
-  }
-  
-  // Handle lines/spans structure (MinerU format)
-  if (block.lines && block.lines.length > 0) {
-    for (let lineIdx = 0; lineIdx < block.lines.length; lineIdx++) {
-      const line = block.lines[lineIdx]!;
-      const spans = line.spans || [];
-      
-      for (let spanIdx = 0; spanIdx < spans.length; spanIdx++) {
-        const span = spans[spanIdx]!;
-        const content = span.content || '';
-        
-        if (content) {
-          segments.push({
-            text: content,
-            pageIdx,
-            blockIdx,
-            lineIdx,
-            spanIdx,
-            bbox: span.bbox || block.bbox,
-            pageSize,
-            startOffset: currentOffset,
-            endOffset: currentOffset + content.length,
-          });
-          currentOffset += content.length;
-        }
-      }
-    }
-  }
-  // Handle direct text field (PaddleOCR format)
-  else if (block.text) {
-    const content = block.text;
+    const text = parts.map((p) => p.text).join('');
+    const clause = text
+      .trim()
+      .match(/^(第[零〇一二三四五六七八九十百千\d]+[条款项章节]|\d+(?:\.\d+)*[、.．)）\s])/u)?.[0]
+      ?.trim();
+    units.push({
+      text,
+      kind,
+      structure,
+      anchor: kind === 'cell' ? structure : clause,
+      startOffset,
+      endOffset: offset,
+      blockIdx,
+    });
     segments.push({
-      text: content,
+      text: '\n',
       pageIdx,
       blockIdx,
-      lineIdx: 0,
-      spanIdx: 0,
-      bbox: block.bbox,
-      pageSize,
-      startOffset: currentOffset,
-      endOffset: currentOffset + content.length,
+      lineIdx: -1,
+      spanIdx: -1,
+      precision: 'unknown',
+      startOffset: offset,
+      endOffset: offset + 1,
     });
-    currentOffset += content.length;
+    offset++;
   }
-  
-  return { segments, nextOffset: currentOffset };
-}
-
-/**
- * Find the segment that contains a given character offset
- */
-export function findSegmentAtOffset(
-  segments: TextSegment[],
-  offset: number
-): TextSegment | null {
-  for (const segment of segments) {
-    if (offset >= segment.startOffset && offset < segment.endOffset) {
-      return segment;
+  blocks.forEach(({ block, pageIdx }, blockIdx) => {
+    if (options.ignoreHeaders && ignored.has(block.type ?? '')) return;
+    if (block.type === 'table') {
+      const cells = block.cells ?? tableCellsFromHTML(findHTML(block));
+      if (!cells.length) throw new Error('表格缺少可比较的单元格结构，请重新解析或提交反馈。');
+      const table = tableIndex++;
+      for (const cell of cells) {
+        // Include spans in structure identity so a merge/split with identical text is still a change.
+        addUnit(
+          [
+            {
+              text: cell.text || '（空单元格）',
+              bbox: cell.bbox ?? block.bbox,
+              precision: cell.bbox ? 'cell' : block.bbox ? 'block' : 'unknown',
+              line: cell.row,
+              span: cell.col,
+            },
+          ],
+          pageIdx,
+          blockIdx,
+          'cell',
+          `${table}:${cell.row}:${cell.col}:${cell.rowspan ?? 1}:${cell.colspan ?? 1}`
+        );
+      }
+      return;
     }
-  }
-  return null;
+    const parts: Array<{
+      text: string;
+      bbox?: Bbox;
+      precision: CoordinatePrecision;
+      line: number;
+      span: number;
+    }> = [];
+    function collect(b: Block) {
+      if (b.blocks?.length) {
+        b.blocks.forEach(collect);
+        return;
+      }
+      if (b.lines?.length) {
+        b.lines.forEach((line, lineIdx) =>
+          line.spans.forEach((span, spanIdx) => {
+            if (span.chars?.length && span.chars.map((c) => c.content).join('') === span.content) {
+              span.chars.forEach((char) =>
+                parts.push({
+                  text: char.content,
+                  bbox: char.bbox,
+                  precision: char.bbox ? 'character' : 'unknown',
+                  line: lineIdx,
+                  span: spanIdx,
+                })
+              );
+            } else {
+              parts.push({
+                text: span.content ?? '',
+                bbox: span.bbox ?? line.bbox ?? b.bbox,
+                precision: span.bbox ? 'span' : line.bbox ? 'line' : b.bbox ? 'block' : 'unknown',
+                line: lineIdx,
+                span: spanIdx,
+              });
+            }
+          })
+        );
+      } else if (b.text)
+        parts.push({ text: b.text, bbox: b.bbox, precision: b.bbox ? 'block' : 'unknown', line: 0, span: 0 });
+    }
+    collect(block);
+    addUnit(parts, pageIdx, blockIdx, block.type ?? 'text');
+  });
+  return { fullText: segments.map((s) => s.text).join(''), segments, units };
 }
-
-/**
- * Find all segments that overlap with a given offset range
- */
+function findHTML(block: Block): string {
+  if (block.html) return block.html;
+  if (block.text?.includes('<table')) return block.text;
+  for (const b of block.blocks ?? []) {
+    const html = findHTML(b);
+    if (html) return html;
+  }
+  for (const line of block.lines ?? [])
+    for (const span of line.spans) if (span.html) return span.html;
+  return '';
+}
+// Compatibility for older normalized artifacts; new backend artifacts already carry cells.
+export function tableCellsFromHTML(html: string): TableCell[] {
+  const cells: TableCell[] = [];
+  const occupied = new Set<string>();
+  let row = 0;
+  for (const tr of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    let col = 0;
+    for (const td of tr[1]!.matchAll(/<t[dh]\b([^>]*)>([\s\S]*?)<\/t[dh]>/gi)) {
+      while (occupied.has(`${row}:${col}`)) col++;
+      const attr = (name: string) =>
+        Math.min(
+          1000,
+          Math.max(
+            1,
+            Number(td[1]!.match(new RegExp(`${name}\\s*=\\s*["']?(\\d+)`, 'i'))?.[1] ?? 1)
+          )
+        );
+      const rowspan = attr('rowspan'),
+        colspan = attr('colspan');
+      const text = td[2]!
+        .replace(/<br\s*\/?\s*>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&#(x[0-9a-f]+|\d+);/gi, (_, n: string) =>
+          String.fromCodePoint(n[0]?.toLowerCase() === 'x' ? parseInt(n.slice(1), 16) : Number(n))
+        )
+        .replace(
+          /&(amp|lt|gt|quot|apos|nbsp);/g,
+          (_, n: string) =>
+            ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' })[n] ?? ''
+        )
+        .trim();
+      cells.push({ row, col, rowspan, colspan, text });
+      for (let r = row; r < row + rowspan; r++)
+        for (let c = col; c < col + colspan; c++) occupied.add(`${r}:${c}`);
+      col += colspan;
+    }
+    row++;
+  }
+  return cells;
+}
+export function findSegmentAtOffset(segments: TextSegment[], offset: number): TextSegment | null {
+  let lo = 0,
+    hi = segments.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (segments[mid]!.endOffset <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  const s = segments[lo];
+  return s && s.startOffset <= offset ? s : null;
+}
 export function findSegmentsInRange(
   segments: TextSegment[],
   startOffset: number,
   endOffset: number
 ): TextSegment[] {
-  return segments.filter(segment => 
-    segment.startOffset < endOffset && segment.endOffset > startOffset
-  );
+  let lo = 0,
+    hi = segments.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (segments[mid]!.endOffset <= startOffset) lo = mid + 1;
+    else hi = mid;
+  }
+  const out: TextSegment[] = [];
+  for (let i = lo; i < segments.length && segments[i]!.startOffset < endOffset; i++)
+    out.push(segments[i]!);
+  return out;
 }
-
-/**
- * Get the bbox for a character range within segments
- * Returns the union of all overlapping segment bboxes
- */
 export function getBboxForRange(
   segments: TextSegment[],
   startOffset: number,
   endOffset: number
-): { bbox: [number, number, number, number]; pageIdx: number } | null {
-  const overlapping = findSegmentsInRange(segments, startOffset, endOffset);
-  
-  if (overlapping.length === 0) {
-    return null;
-  }
-  
-  // Use the first segment's page
-  const pageIdx = overlapping[0]!.pageIdx;
-  
-  // Compute union bbox
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  
-  for (const segment of overlapping) {
-    if (segment.bbox) {
-      const [x0, y0, x1, y1] = segment.bbox;
-      minX = Math.min(minX, x0);
-      minY = Math.min(minY, y0);
-      maxX = Math.max(maxX, x1);
-      maxY = Math.max(maxY, y1);
-    }
-  }
-  
-  if (minX === Infinity) {
-    return null;
-  }
-  
+): { bbox: Bbox; pageIdx: number } | null {
+  const found = findSegmentsInRange(segments, startOffset, endOffset).filter((s) => s.bbox);
+  if (!found.length) return null;
+  const first = found[0]!;
+  const samePage = found.filter((s) => s.pageIdx === first.pageIdx);
   return {
-    bbox: [minX, minY, maxX, maxY],
-    pageIdx,
+    pageIdx: first.pageIdx,
+    bbox: [
+      Math.min(...samePage.map((s) => s.bbox![0])),
+      Math.min(...samePage.map((s) => s.bbox![1])),
+      Math.max(...samePage.map((s) => s.bbox![2])),
+      Math.max(...samePage.map((s) => s.bbox![3])),
+    ],
   };
 }

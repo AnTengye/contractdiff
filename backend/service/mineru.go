@@ -11,11 +11,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/AnTengye/contractdiff/backend/config"
 	"github.com/AnTengye/contractdiff/backend/pkg/httpclient"
+	"github.com/go-resty/resty/v2"
 )
 
 const (
@@ -239,7 +241,7 @@ func (s *MineruService) VerifyCallback(checksum, content string, uid string) boo
 
 func (s *MineruService) FetchJSONResult(jsonURL string) (map[string]interface{}, error) {
 	ctx := context.Background()
-	resp, err := s.httpClient.Get(ctx, jsonURL)
+	resp, err := s.resultGet(ctx, jsonURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JSON: %w", err)
 	}
@@ -260,7 +262,7 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	slog.Debug("downloading ZIP", "url", zipURL)
 
 	ctx := context.Background()
-	resp, err := s.httpClient.Get(ctx, zipURL)
+	resp, err := s.resultGet(ctx, zipURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download ZIP: %w", err)
 	}
@@ -278,7 +280,8 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 	}
 
 	var jsonData map[string]interface{}
-	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
+	prioritizeArchive(zipReader.File)
+	jsonFiles := []string{"middle.json", "layout.json", "content_list.json", "model.json"}
 
 	for _, file := range zipReader.File {
 		slog.Debug("ZIP file entry", "name", file.Name)
@@ -292,7 +295,7 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 					continue
 				}
 
-				content, err := io.ReadAll(rc)
+				content, err := readLimited(rc, s.maxResultSize())
 				rc.Close()
 				if err != nil {
 					continue
@@ -318,7 +321,7 @@ func (s *MineruService) FetchZipAndExtractJSON(zipURL string) (map[string]interf
 				continue
 			}
 
-			content, err := io.ReadAll(rc)
+			content, err := readLimited(rc, s.maxResultSize())
 			rc.Close()
 			if err != nil {
 				continue
@@ -345,7 +348,7 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 	slog.Debug("downloading ZIP for full extraction", "url", zipURL)
 
 	ctx := context.Background()
-	resp, err := s.httpClient.Get(ctx, zipURL)
+	resp, err := s.resultGet(ctx, zipURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download ZIP: %w", err)
 	}
@@ -363,9 +366,10 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 	}
 
 	result := &ZipExtractResult{}
+	prioritizeArchive(zipReader.File)
 
-	jsonFiles := []string{"content_list.json", "middle.json", "model.json"}
-	pdfFiles := []string{"layout.pdf", "spans.pdf", "origin.pdf"}
+	jsonFiles := []string{"middle.json", "layout.json", "content_list.json", "model.json"}
+	pdfFiles := []string{"origin.pdf", "original.pdf", "layout.pdf", "spans.pdf"}
 
 	for _, file := range zipReader.File {
 		slog.Debug("ZIP file entry", "name", file.Name)
@@ -377,7 +381,7 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 					if err != nil {
 						continue
 					}
-					content, err := io.ReadAll(rc)
+					content, err := readLimited(rc, s.maxResultSize())
 					rc.Close()
 					if err != nil {
 						continue
@@ -399,7 +403,7 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 					if err != nil {
 						continue
 					}
-					content, err := io.ReadAll(rc)
+					content, err := readLimited(rc, s.maxResultSize())
 					rc.Close()
 					if err != nil {
 						continue
@@ -426,7 +430,7 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 				if err != nil {
 					continue
 				}
-				content, err := io.ReadAll(rc)
+				content, err := readLimited(rc, s.maxResultSize())
 				rc.Close()
 				if err != nil {
 					continue
@@ -447,7 +451,7 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 				if err != nil {
 					continue
 				}
-				content, err := io.ReadAll(rc)
+				content, err := readLimited(rc, s.maxResultSize())
 				rc.Close()
 				if err != nil {
 					continue
@@ -467,4 +471,43 @@ func (s *MineruService) FetchZipAndExtractFiles(zipURL string) (*ZipExtractResul
 	}
 
 	return result, nil
+}
+
+func (s *MineruService) maxResultSize() int64 {
+	if s.config != nil && s.config.MaxResultSizeBytes > 0 {
+		return s.config.MaxResultSizeBytes
+	}
+	return 50 << 20
+}
+
+func (s *MineruService) resultGet(ctx context.Context, url string) (*resty.Response, error) {
+	return s.httpClient.R(ctx).SetResponseBodyLimit(int(s.maxResultSize())).Get(url)
+}
+
+func readLimited(reader io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = 50 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("archive member exceeds maximum size of %d bytes", limit)
+	}
+	return data, nil
+}
+
+// ZIP member order is not semantic priority. Prefer coordinate-rich middle JSON
+// and an unannotated PDF over model debug artifacts.
+func prioritizeArchive(files []*zip.File) {
+	rank := func(name string) int {
+		for i, suffix := range []string{"middle.json", "layout.json", "content_list.json", "model.json", "origin.pdf", "original.pdf", "layout.pdf", "spans.pdf"} {
+			if strings.HasSuffix(name, suffix) {
+				return i
+			}
+		}
+		return 100
+	}
+	sort.SliceStable(files, func(i, j int) bool { return rank(files[i].Name) < rank(files[j].Name) })
 }

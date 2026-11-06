@@ -82,8 +82,9 @@ func (p *PaddleOCRParser) CreateTask(ctx context.Context, fileURL, documentID st
 	}
 
 	reqBody := map[string]interface{}{
-		"file":     fileData,
-		"fileType": fileType,
+		"file":      fileData,
+		"fileType":  fileType,
+		"visualize": false,
 	}
 
 	if p.config.UseLayoutDetection != nil {
@@ -137,10 +138,18 @@ func (p *PaddleOCRParser) CreateTask(ctx context.Context, fileURL, documentID st
 	}
 
 	if apiResp.StatusCode() != http.StatusOK {
-		return "", fmt.Errorf("PaddleOCR API returned status %d: %s", apiResp.StatusCode(), string(apiResp.Body()))
+		return "", fmt.Errorf("PaddleOCR API returned status %d", apiResp.StatusCode())
 	}
 
 	respBody := apiResp.Body()
+	var envelope struct {
+		ErrorCode int             `json:"errorCode"`
+		ErrorMsg  string          `json:"errorMsg"`
+		Result    json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil || envelope.ErrorCode != 0 || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+		return "", fmt.Errorf("PaddleOCR returned an invalid or unsuccessful result (code %d)", envelope.ErrorCode)
+	}
 
 	slog.Info("PaddleOCR processing completed",
 		"document_id", documentID,
@@ -216,12 +225,13 @@ func cleanupExpiredResults() {
 			}
 		}
 
+		remaining := len(resultStore.results)
 		resultStore.mu.Unlock()
 
 		if expiredCount > 0 {
 			slog.Info("cleaned up expired PaddleOCR results",
 				"expired_count", expiredCount,
-				"remaining_count", len(resultStore.results))
+				"remaining_count", remaining)
 		}
 	}
 }
@@ -251,6 +261,8 @@ func (p *PaddleOCRParser) FetchResult(ctx context.Context, taskID string, result
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal result JSON: %w", err)
 	}
+
+	defer func() { resultStore.mu.Lock(); delete(resultStore.results, taskID); resultStore.mu.Unlock() }()
 
 	if res, ok := result["result"].(map[string]interface{}); ok {
 		if parseResultURL, ok := res["parse_result_url"].(string); ok && parseResultURL != "" {
@@ -287,10 +299,21 @@ func (p *PaddleOCRParser) downloadParseResult(ctx context.Context, url string) (
 }
 
 func (p *PaddleOCRParser) NormalizeResult(rawData map[string]interface{}) (map[string]interface{}, error) {
+	// Keep the parser response immutable while derived layout structures are
+	// assembled for comparison.
+	rawData = cloneJSONMap(rawData)
 	metadata := map[string]interface{}{
 		"source": "paddleocr",
 	}
 
+	if result, ok := rawData["result"].(map[string]interface{}); ok {
+		if pages, ok := result["layoutParsingResults"].([]interface{}); ok {
+			metadata["page_count"] = len(pages)
+		}
+	}
+	if pages, ok := rawData["pages"].([]interface{}); ok {
+		metadata["page_count"] = len(pages)
+	}
 	pageSizes := extractPaddleOCRPageSizes(rawData)
 	if len(pageSizes) > 0 {
 		metadata["page_sizes"] = pageSizes
@@ -303,7 +326,7 @@ func (p *PaddleOCRParser) NormalizeResult(rawData map[string]interface{}) (map[s
 		"metadata":   metadata,
 	}
 
-	return normalized, nil
+	return finalizeNormalized(normalized)
 }
 
 func extractPaddleOCRPageSizes(data map[string]interface{}) []map[string]interface{} {
@@ -329,6 +352,28 @@ func extractPaddleOCRPageSizes(data map[string]interface{}) []map[string]interfa
 		}
 	}
 
+	if len(pageSizes) == 0 {
+		if pages, ok := data["pages"].([]interface{}); ok {
+			for idx, item := range pages {
+				page, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				width, _ := page["width"].(float64)
+				height, _ := page["height"].(float64)
+				if size, ok := page["page_size"].([]interface{}); ok && len(size) == 2 {
+					width, _ = size[0].(float64)
+					height, _ = size[1].(float64)
+				}
+				if n, ok := page["page_num"].(float64); ok {
+					idx = int(n)
+				}
+				if width > 0 && height > 0 {
+					pageSizes = append(pageSizes, map[string]interface{}{"page_idx": idx, "width": width, "height": height})
+				}
+			}
+		}
+	}
 	return pageSizes
 }
 
@@ -389,7 +434,7 @@ func normalizePaddleOCRParagraphs(data map[string]interface{}) []interface{} {
 							}
 
 							layoutType, _ := layout["type"].(string)
-							if layoutType == "table" || layoutType == "image" {
+							if layoutType == "image" {
 								continue
 							}
 
@@ -433,7 +478,7 @@ func normalizePaddleOCRParagraphs(data map[string]interface{}) []interface{} {
 											continue
 										}
 										blockLabel, _ := block["block_label"].(string)
-										if blockLabel == "table" || blockLabel == "image" || blockLabel == "header_image" {
+										if blockLabel == "image" || blockLabel == "header_image" {
 											continue
 										}
 
@@ -451,6 +496,7 @@ func normalizePaddleOCRParagraphs(data map[string]interface{}) []interface{} {
 											y1, _ := bbox[3].(float64)
 											paragraph["bbox"] = []float64{x0, y0, x1, y1}
 										}
+										attachPaddleStructure(paragraph, block, prunedResult)
 
 										paragraphs = append(paragraphs, paragraph)
 										pageParaCount++
@@ -469,7 +515,7 @@ func normalizePaddleOCRParagraphs(data map[string]interface{}) []interface{} {
 											continue
 										}
 										blockLabel, _ := block["block_label"].(string)
-										if blockLabel == "table" || blockLabel == "image" {
+										if blockLabel == "image" {
 											continue
 										}
 

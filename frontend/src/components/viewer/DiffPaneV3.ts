@@ -1,5 +1,5 @@
 // Diff pane component - renders text diff results
-// Uses jsdiff-based whole-document comparison
+// Renders aligned document changes with shared navigation IDs.
 
 import { diffStore, type DiffState } from '@/store';
 import { escapeHtml } from '@/utils/html';
@@ -28,6 +28,10 @@ export class DiffPaneV3 {
   }
 
   private render(state: DiffState): void {
+    if (state.error) {
+      this.container.innerHTML = `<p class="comparison-error">${escapeHtml(state.error)}</p>`;
+      return;
+    }
     if (state.textDiffResult) {
       const result = state.textDiffResult;
       const sideResult = this.side === 'left' ? result.left : result.right;
@@ -51,7 +55,7 @@ export class DiffPaneV3 {
     let html = '';
     let lastPage = -1;
     let lastBlock: number | undefined = undefined;
-    let diffIndex = 0;
+    const feedbackAdded = new Set<number>();
 
     for (const segment of segments) {
       // Add page separator if page changed
@@ -61,7 +65,11 @@ export class DiffPaneV3 {
         lastBlock = undefined;
       }
 
-      if (segment.blockIdx !== undefined && segment.blockIdx !== lastBlock && lastBlock !== undefined) {
+      if (
+        segment.blockIdx !== undefined &&
+        segment.blockIdx !== lastBlock &&
+        lastBlock !== undefined
+      ) {
         html += '<div class="block-separator"></div>';
       }
       lastBlock = segment.blockIdx;
@@ -79,15 +87,20 @@ export class DiffPaneV3 {
       switch (segment.type) {
         case 'added':
           className = 'diff-added';
-          isCurrentDiff = diffIndex === currentDiffIndex;
-          dataAttrs.push(`data-diff-index="${diffIndex}"`);
-          diffIndex++;
+          isCurrentDiff = segment.diffId === currentDiffIndex;
+          dataAttrs.push(`data-diff-index="${segment.diffId}"`);
+
           break;
         case 'removed':
           className = 'diff-removed';
-          isCurrentDiff = diffIndex === currentDiffIndex;
-          dataAttrs.push(`data-diff-index="${diffIndex}"`);
-          diffIndex++;
+          isCurrentDiff = segment.diffId === currentDiffIndex;
+          dataAttrs.push(`data-diff-index="${segment.diffId}"`);
+
+          break;
+        case 'moved':
+          className = 'diff-moved';
+          isCurrentDiff = segment.diffId === currentDiffIndex;
+          dataAttrs.push(`data-diff-index="${segment.diffId}"`);
           break;
         case 'unchanged':
           className = 'unchanged';
@@ -100,6 +113,10 @@ export class DiffPaneV3 {
 
       const escapedText = escapeHtml(segment.text).replace(/\n/g, '<br>');
       html += `<span class="${className}" ${dataAttrs.join(' ')}>${escapedText}</span>`;
+      if (segment.diffId !== undefined && !feedbackAdded.has(segment.diffId)) {
+        feedbackAdded.add(segment.diffId);
+        html += `<button type="button" class="diff-feedback-button" data-feedback-diff="${segment.diffId}" data-feedback-side="${this.side}" aria-label="反馈第 ${segment.diffId + 1} 处差异">反馈</button>`;
+      }
     }
 
     return html || '<p class="placeholder">无差异</p>';
@@ -112,10 +129,15 @@ export class DiffPaneV3 {
     setTimeout(() => {
       const currentDiffElement = this.container.querySelector(`[data-diff-index="${diffIndex}"]`);
       if (currentDiffElement) {
-        currentDiffElement.scrollIntoView({
+        const bounds = currentDiffElement.getBoundingClientRect();
+        const pane = this.container.getBoundingClientRect();
+        this.container.scrollTo({
+          top:
+            this.container.scrollTop +
+            bounds.top -
+            pane.top -
+            (this.container.clientHeight - bounds.height) / 2,
           behavior: 'smooth',
-          block: 'center',
-          inline: 'nearest'
         });
       }
     }, 100);

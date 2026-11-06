@@ -6,6 +6,7 @@ const USER_KEY = 'auth_user';
 export interface AuthUser {
   username: string;
   tenant: string;
+  can_review_feedback?: boolean;
 }
 
 /**

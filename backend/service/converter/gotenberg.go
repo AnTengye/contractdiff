@@ -1,15 +1,20 @@
 package converter
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/AnTengye/contractdiff/backend/config"
+	"github.com/AnTengye/contractdiff/backend/service/pdfcheck"
 )
 
 // GotenbergConverter handles DOCX to PDF conversion using Gotenberg
@@ -28,6 +33,18 @@ func NewGotenbergConverter(cfg *config.GotenbergConfig) (*GotenbergConverter, er
 	if timeout == 0 {
 		timeout = 60 * time.Second
 	}
+	if cfg.MaxInputBytes <= 0 {
+		cfg.MaxInputBytes = 50 << 20
+	}
+	if cfg.MaxOutputBytes <= 0 {
+		cfg.MaxOutputBytes = 50 << 20
+	}
+	if cfg.ReadRateBytesPerSecond <= 0 {
+		cfg.ReadRateBytesPerSecond = 10 << 20
+	}
+	if cfg.Revision == "" {
+		cfg.Revision = "gotenberg-pdf-v1"
+	}
 
 	return &GotenbergConverter{
 		config: cfg,
@@ -37,11 +54,22 @@ func NewGotenbergConverter(cfg *config.GotenbergConfig) (*GotenbergConverter, er
 	}, nil
 }
 
+func (c *GotenbergConverter) Revision() string {
+	return c.config.Revision
+}
+
 // ConvertDOCXToPDF converts a DOCX file to PDF
 // fileContent is the DOCX file data
 // filename is the name of the file (e.g., "document.docx")
 // Returns the PDF file data
 func (c *GotenbergConverter) ConvertDOCXToPDF(ctx context.Context, fileContent []byte, filename string) ([]byte, error) {
+	if int64(len(fileContent)) > c.config.MaxInputBytes {
+		return nil, fmt.Errorf("DOCX exceeds maximum input size of %d bytes", c.config.MaxInputBytes)
+	}
+	return c.convertDOCXBytes(ctx, fileContent, filename, extractDOCXTextSample(fileContent))
+}
+
+func (c *GotenbergConverter) convertDOCXBytes(ctx context.Context, fileContent []byte, filename, textSample string) ([]byte, error) {
 	// Create multipart form
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -82,14 +110,29 @@ func (c *GotenbergConverter) ConvertDOCXToPDF(ctx context.Context, fileContent [
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := c.readBody(ctx, resp.Body, c.config.MaxOutputBytes)
 		return nil, fmt.Errorf("Gotenberg returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if contentType != "" && !strings.Contains(contentType, "application/pdf") &&
+		!strings.Contains(contentType, "application/octet-stream") {
+		return nil, fmt.Errorf("Gotenberg returned non-PDF content type %q", contentType)
 	}
 
 	// Read PDF content
-	pdfContent, err := io.ReadAll(resp.Body)
+	pdfContent, err := c.readBody(ctx, resp.Body, c.config.MaxOutputBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read PDF content: %w", err)
+	}
+	if len(pdfContent) < 5 || !bytes.HasPrefix(pdfContent, []byte("%PDF-")) {
+		return nil, fmt.Errorf("Gotenberg returned a non-PDF response")
+	}
+	if textSample != "" {
+		if _, err := pdfcheck.Validate(pdfContent, pdfcheck.Options{
+			MaxBytes: c.config.MaxOutputBytes, TextSample: textSample, RequireText: true,
+		}); err != nil {
+			return nil, fmt.Errorf("converted PDF validation failed: %w", err)
+		}
 	}
 
 	return pdfContent, nil
@@ -112,14 +155,119 @@ func (c *GotenbergConverter) ConvertDOCXFromURL(ctx context.Context, docxURL str
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to download DOCX, status %d", resp.StatusCode)
 	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/html") {
+		return nil, fmt.Errorf("DOCX download returned HTML instead of a document")
+	}
 
-	docxContent, err := io.ReadAll(resp.Body)
+	docxContent, err := c.readBody(ctx, resp.Body, c.config.MaxInputBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read DOCX content: %w", err)
 	}
 
 	// Convert to PDF
-	return c.ConvertDOCXToPDF(ctx, docxContent, "document.docx")
+	return c.convertDOCXBytes(ctx, docxContent, "document.docx", extractDOCXTextSample(docxContent))
+}
+
+func (c *GotenbergConverter) readBody(ctx context.Context, body io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = 50 << 20
+	}
+	var output bytes.Buffer
+	buffer := make([]byte, 32*1024)
+	reader := &pacedReader{
+		ctx: ctx, source: body, bytesPerSecond: c.config.ReadRateBytesPerSecond,
+	}
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			if int64(output.Len()+n) > limit {
+				return nil, fmt.Errorf("response exceeds maximum size of %d bytes", limit)
+			}
+			_, _ = output.Write(buffer[:n])
+		}
+		if err == io.EOF {
+			return output.Bytes(), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+type pacedReader struct {
+	ctx            context.Context
+	source         io.Reader
+	bytesPerSecond int64
+	readBytes      int64
+	started        time.Time
+}
+
+func (r *pacedReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if r.started.IsZero() {
+		r.started = time.Now()
+	}
+	n, err := r.source.Read(p)
+	if n > 0 && r.bytesPerSecond > 0 {
+		r.readBytes += int64(n)
+		expected := time.Duration(float64(r.readBytes) / float64(r.bytesPerSecond) * float64(time.Second))
+		wait := expected - time.Since(r.started)
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-r.ctx.Done():
+				timer.Stop()
+				return n, r.ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return n, err
+}
+
+func extractDOCXTextSample(data []byte) string {
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return ""
+	}
+	for _, file := range reader.File {
+		if file.Name != "word/document.xml" {
+			continue
+		}
+		stream, err := file.Open()
+		if err != nil {
+			return ""
+		}
+		defer stream.Close()
+		decoder := xml.NewDecoder(stream)
+		var text strings.Builder
+		for {
+			token, tokenErr := decoder.Token()
+			if tokenErr == io.EOF {
+				break
+			}
+			if tokenErr != nil {
+				return ""
+			}
+			if charData, ok := token.(xml.CharData); ok {
+				text.Write([]byte(charData))
+			}
+		}
+		sample := strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, text.String())
+		if len([]rune(sample)) > 64 {
+			return string([]rune(sample)[:64])
+		}
+		return sample
+	}
+	return ""
 }
 
 // IsAvailable checks if Gotenberg service is reachable

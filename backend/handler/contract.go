@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/AnTengye/contractdiff/backend/service"
 	"github.com/AnTengye/contractdiff/backend/service/converter"
 	"github.com/AnTengye/contractdiff/backend/service/parser"
+	"github.com/AnTengye/contractdiff/backend/service/pdfcheck"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -33,6 +35,7 @@ type ContractHandler struct {
 	httpClient     *httpclient.Client
 	timingConfig   *config.TimingConfig
 	timingAlerter  timing.Alerter
+	parseSlots     chan struct{}
 }
 
 func NewContractHandler(
@@ -50,6 +53,7 @@ func NewContractHandler(
 		httpClient:     httpclient.New(),
 		timingConfig:   timingCfg,
 		timingAlerter:  timingAlerter,
+		parseSlots:     make(chan struct{}, 4),
 	}
 }
 
@@ -84,34 +88,46 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 	originalFormat := strings.TrimPrefix(ext, ".")
 
-	// Get selected parser from registry
-	selectedParser, err := h.parserRegistry.Get(parser.ParserType(parserTypeStr))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": fmt.Sprintf("Parser %s not available: %v", parserTypeStr, err),
-		})
-		return
-	}
-
-	// Check format compatibility
-	if !selectedParser.CanParse(originalFormat) {
-		// If DOCX and parser doesn't support it, check if we have converter
-		if originalFormat == "docx" && h.converter == nil {
+	// DOCX always follows the canonical conversion path and is then submitted
+	// to MinerU as PDF. A missing converter disables only Word uploads; PDF
+	// uploads continue to use the selected parser.
+	var selectedParser parser.DocumentParser
+	if originalFormat == "docx" {
+		if h.converter == nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": fmt.Sprintf("Parser %s does not support DOCX format and converter is not available", parserTypeStr),
-			})
-			return
-		} else if originalFormat != "docx" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": fmt.Sprintf("Parser %s does not support %s format", parserTypeStr, originalFormat),
+				"error": "DOCX upload is unavailable because the PDF conversion service is not configured; PDF upload remains available",
 			})
 			return
 		}
-		slog.Info("parser does not support DOCX, will convert to PDF",
-			"parser_type", parserTypeStr,
-			"request_id", requestID,
-		)
+		parserTypeStr = string(parser.ParserTypeMinerU)
+		selectedParser, err = h.parserRegistry.Get(parser.ParserTypeMinerU)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "DOCX upload requires the MinerU PDF parser, which is not available",
+			})
+			return
+		}
+	} else {
+		selectedParser, err = h.parserRegistry.Get(parser.ParserType(parserTypeStr))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Parser %s not available: %v", parserTypeStr, err),
+			})
+			return
+		}
+		if !selectedParser.CanParse("pdf") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Parser %s does not support PDF format", parserTypeStr),
+			})
+			return
+		}
 	}
+	identity := parser.ParserIdentity(selectedParser)
+	conversionRevision := ""
+	if originalFormat == "docx" {
+		conversionRevision = h.converter.Revision()
+	}
+	processingSignature := parser.ProcessingSignature(originalFormat, identity, conversionRevision)
 
 	// Determine content type based on extension
 	var expectedContentType string
@@ -147,10 +163,27 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 	// Calculate file hash for deduplication
 	// Read file content into memory to calculate hash
-	fileBytes, err := io.ReadAll(file)
+	fileLimit := selectedParser.GetCapabilities().MaxFileSize
+	if fileLimit <= 0 {
+		fileLimit = 50 << 20
+	}
+	fileBytes, err := io.ReadAll(io.LimitReader(file, fileLimit+1))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file"})
 		return
+	}
+	if int64(len(fileBytes)) > fileLimit {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "File exceeds parser size limit"})
+		return
+	}
+
+	var inputPDFInfo pdfcheck.Info
+	if originalFormat == "pdf" {
+		inputPDFInfo, err = pdfcheck.Validate(fileBytes, pdfcheck.Options{MaxBytes: fileLimit})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PDF: " + err.Error()})
+			return
+		}
 	}
 
 	// Calculate SHA256 hash
@@ -166,7 +199,15 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 	// Check for duplicate files in the same tenant (skip if force reprocess)
 	var existingContract *model.Contract
 	if !forceReprocess {
-		existingContract = h.store.FindByHash(tenant, fileHash)
+		existingContract = h.store.FindParsedPipeline(tenant, fileHash, processingSignature)
+		if existingContract != nil && !h.cachePDFUsable(c.Request.Context(), existingContract, fileLimit) {
+			slog.Info("cached result failed canonical PDF integrity check, rebuilding",
+				"request_id", requestID,
+				"existing_contract_id", existingContract.ID,
+				"file_hash", fileHash,
+			)
+			existingContract = nil
+		}
 	}
 
 	// If the existing contract failed, we should not return it as a cached result.
@@ -191,33 +232,9 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 		// Increment duplicate count
 		h.store.IncrementDuplicateCount(existingContract.ID)
 
-		// Create a new contract record that references the original
-		contractID := uuid.New().String()
-		duplicateContract := &model.Contract{
-			ID:               contractID,
-			Filename:         header.Filename,
-			Tenant:           tenant,
-			OriginalFormat:   originalFormat,
-			FileURL:          existingContract.FileURL,
-			ConvertedFileURL: existingContract.ConvertedFileURL,
-			FileHash:         fileHash,
-			FileSize:         fileSize,
-			ParserType:       existingContract.ParserType,
-			Status:           existingContract.Status,
-			IsDuplicate:      true,
-			OriginalID:       existingContract.ID,
-			JSONData:         existingContract.JSONData,
-			RawJSONData:      existingContract.RawJSONData,
-			Metadata:         existingContract.Metadata,
-			CreatedAt:        time.Now(),
-			UpdatedAt:        time.Now(),
-		}
-
-		h.store.Save(duplicateContract)
-
 		c.JSON(http.StatusOK, gin.H{
 			"id":           existingContract.ID,
-			"filename":     duplicateContract.Filename,
+			"filename":     header.Filename,
 			"status":       existingContract.Status,
 			"is_duplicate": true,
 			"original_id":  existingContract.ID,
@@ -270,19 +287,34 @@ func (h *ContractHandler) Upload(c *gin.Context) {
 
 	// Create contract record with new fields
 	contract := &model.Contract{
-		ID:             contractID,
-		Filename:       header.Filename,
-		Tenant:         tenant,
-		OriginalFormat: originalFormat,
-		FileURL:        fileURL,
-		PDFURL:         fileURL, // Backward compatibility
-		FileHash:       fileHash,
-		FileSize:       fileSize,
-		ParserType:     parserTypeStr,
-		Status:         model.StatusPending,
-		Metadata:       &model.ContractMetadata{},
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		ID:                   contractID,
+		Filename:             header.Filename,
+		Tenant:               tenant,
+		OriginalFormat:       originalFormat,
+		FileURL:              fileURL,
+		FileHash:             fileHash,
+		FileSize:             fileSize,
+		ParserType:           parserTypeStr,
+		ParserVersion:        identity.Version,
+		ParserSignature:      identity.Signature,
+		ProcessingSignature:  processingSignature,
+		ConversionRevision:   conversionRevision,
+		ParserSettings:       identity.Settings,
+		NormalizationVersion: parser.NormalizationVersion,
+		FileObjectKey:        objectName,
+		RequestID:            requestID,
+		Status:               model.StatusPending,
+		Metadata:             &model.ContractMetadata{},
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
+	}
+	if originalFormat == "pdf" {
+		contract.PDFURL = fileURL
+		contract.PDFHash = inputPDFInfo.SHA256
+		contract.PDFObjectKey = objectName
+		contract.Metadata.PageCount = inputPDFInfo.PageCount
+		contract.Metadata.PDFPages = toModelPDFPages(inputPDFInfo)
+		contract.ResultSignature = parser.ResultSignature(contract.PDFHash, processingSignature)
 	}
 	h.store.Save(contract)
 
@@ -317,11 +349,12 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 				"trace_id", traceID,
 				"panic", r,
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, fmt.Sprintf("Internal error: %v", r))
+			h.store.UpdateFailure(contract.ID, "processing", fmt.Sprintf("Internal error: %v", r))
 		}
 	}()
 
 	ctx := context.Background()
+	contract.TraceID = traceID
 
 	tracker := timing.NewAsyncTracker(
 		traceID,
@@ -333,6 +366,12 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 		h.timingAlerter,
 	)
 	defer tracker.Finish()
+	if h.parseSlots != nil {
+		queueStart := time.Now()
+		h.parseSlots <- struct{}{}
+		defer func() { <-h.parseSlots }()
+		tracker.Record("queue_wait", time.Since(queueStart))
+	}
 
 	slog.Info("starting document processing",
 		"trace_id", traceID,
@@ -342,13 +381,20 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 	)
 
 	fileURLForParser := contract.FileURL
-	if contract.OriginalFormat == "docx" && !selectedParser.CanParse("docx") {
+	if contract.OriginalFormat == "docx" {
+		if h.converter == nil {
+			h.store.UpdateFailure(contract.ID, "conversion", "DOCX conversion service is not configured")
+			return
+		}
 		slog.Info("converting DOCX to PDF",
 			"trace_id", traceID,
 			"contract_id", contract.ID,
 			"parser_type", contract.ParserType,
 		)
-		h.store.UpdateStatus(contract.ID, model.StatusConverting, "")
+		if !h.store.UpdateStatusIfNotTerminal(contract.ID, model.StatusConverting, "") {
+			return
+		}
+		contract.Status = model.StatusConverting
 
 		var pdfContent []byte
 		var conversionDuration time.Duration
@@ -365,7 +411,21 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 				"contract_id", contract.ID,
 				"error", err,
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, "DOCX conversion failed: "+err.Error())
+			h.store.UpdateFailure(contract.ID, "conversion", "DOCX conversion failed: "+err.Error())
+			return
+		}
+
+		pdfInfo, err := pdfcheck.Validate(pdfContent, pdfcheck.Options{
+			MaxBytes:    selectedParser.GetCapabilities().MaxFileSize,
+			RequireText: true,
+		})
+		if err != nil {
+			slog.Error("converted DOCX is not a readable PDF",
+				"trace_id", traceID,
+				"contract_id", contract.ID,
+				"error", err,
+			)
+			h.store.UpdateFailure(contract.ID, "conversion", "Converted DOCX PDF validation failed: "+err.Error())
 			return
 		}
 
@@ -380,7 +440,7 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 				"contract_id", contract.ID,
 				"error", err,
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to save converted PDF: "+err.Error())
+			h.store.UpdateFailure(contract.ID, "conversion", "Failed to save converted PDF: "+err.Error())
 			return
 		}
 
@@ -391,15 +451,24 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 				"contract_id", contract.ID,
 				"error", err,
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to generate PDF URL: "+err.Error())
+			h.store.UpdateFailure(contract.ID, "conversion", "Failed to generate PDF URL: "+err.Error())
 			return
 		}
 
 		fileURLForParser = pdfURL
 		contract.ConvertedFileURL = pdfURL
+		contract.PDFURL = pdfURL
+		contract.PDFHash = pdfInfo.SHA256
+		contract.PDFObjectKey = pdfObjectName
+		contract.ResultSignature = parser.ResultSignature(contract.PDFHash, contract.ProcessingSignature)
 		contract.Metadata.ConvertedFromDOCX = true
 		contract.Metadata.ConversionDuration = conversionDuration.Milliseconds()
-		h.store.Save(contract)
+		contract.Metadata.PageCount = pdfInfo.PageCount
+		contract.Metadata.PDFPages = toModelPDFPages(pdfInfo)
+		if !h.store.SaveIfNotTerminal(contract) {
+			slog.Warn("conversion snapshot was superseded by a terminal state", "contract_id", contract.ID)
+			return
+		}
 
 		slog.Info("DOCX conversion completed",
 			"trace_id", traceID,
@@ -408,7 +477,22 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 		)
 	}
 
-	h.store.UpdateStatus(contract.ID, model.StatusProcessing, "")
+	if !selectedParser.CanParse("pdf") {
+		h.store.UpdateFailure(contract.ID, "parser", fmt.Sprintf("Parser %s does not support PDF input", contract.ParserType))
+		return
+	}
+	if contract.OriginalFormat == "pdf" {
+		fileURLForParser = contract.GetPDFURL()
+	}
+	if fileURLForParser == "" {
+		h.store.UpdateFailure(contract.ID, "preview", "No validated PDF is available for parsing")
+		return
+	}
+
+	if !h.store.UpdateStatusIfNotTerminal(contract.ID, model.StatusProcessing, "") {
+		return
+	}
+	contract.Status = model.StatusProcessing
 
 	var taskID string
 	err := tracker.Track("create_task", func() error {
@@ -423,7 +507,7 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 			"parser_type", contract.ParserType,
 			"error", err,
 		)
-		h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to start parsing: "+err.Error())
+		h.store.UpdateFailure(contract.ID, "parser", "Failed to start parsing: "+err.Error())
 		return
 	}
 
@@ -436,7 +520,7 @@ func (h *ContractHandler) processDocument(contract *model.Contract, selectedPars
 
 	contract.TaskID = taskID
 	contract.MineruTaskID = taskID
-	h.store.Save(contract)
+	h.store.UpdateTaskID(contract.ID, taskID)
 
 	h.pollParserTask(contract, selectedParser, tracker, traceID)
 }
@@ -460,7 +544,9 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 	var lastStatus *parser.TaskStatus
 
 	for i := 0; i < maxAttempts; i++ {
-		time.Sleep(interval)
+		if i > 0 {
+			time.Sleep(interval)
+		}
 
 		status, err := selectedParser.GetTaskStatus(ctx, contract.TaskID)
 		if err != nil {
@@ -505,7 +591,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 				"error_msg", failureMessage,
 				"status_context", buildParserStatusContext(status),
 			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, failureMessage)
+			h.store.UpdateFailure(contract.ID, "parser", failureMessage)
 			return
 		}
 	}
@@ -519,7 +605,7 @@ func (h *ContractHandler) pollParserTask(contract *model.Contract, selectedParse
 		"attempts", maxAttempts,
 		"last_status_context", buildParserStatusContext(lastStatus),
 	)
-	h.store.UpdateStatus(contract.ID, model.StatusFailed, buildParserTimeoutMessage(lastStatus, maxAttempts))
+	h.store.UpdateFailure(contract.ID, "parser", buildParserTimeoutMessage(lastStatus, maxAttempts))
 	return
 
 fetchResult:
@@ -531,66 +617,32 @@ fetchResult:
 	)
 
 	var rawData map[string]interface{}
-	var pdfData []byte
-
-	if mineruParser, ok := selectedParser.(*parser.MineruParser); ok {
-		err := tracker.Track("fetch_result", func() error {
-			result, err := mineruParser.FetchResultWithPDF(ctx, resultURL)
-			if err != nil {
-				return err
-			}
-			rawData = result.JSONData
-			pdfData = result.PDFData
-			return nil
-		})
-		if err != nil {
-			slog.Error("failed to fetch result with PDF",
-				"trace_id", traceID,
-				"contract_id", contract.ID,
-				"error", err,
-			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
-			return
-		}
-
-		if len(pdfData) > 0 && contract.ConvertedFileURL == "" {
-			pdfObjectName := fmt.Sprintf("%s/%s/layout.pdf", contract.Tenant, contract.ID)
-			pdfURL, err := h.minioService.UploadBytes(ctx, pdfObjectName, pdfData, "application/pdf")
-			if err != nil {
-				slog.Warn("failed to upload extracted PDF, continuing without it",
-					"trace_id", traceID,
-					"contract_id", contract.ID,
-					"error", err,
-				)
-			} else {
-				contract.ConvertedFileURL = pdfURL
-				slog.Info("uploaded extracted PDF from MinerU",
-					"trace_id", traceID,
-					"contract_id", contract.ID,
-					"pdf_url", pdfURL,
-					"pdf_size", len(pdfData),
-				)
-			}
-		}
-	} else {
-		err := tracker.Track("fetch_result", func() error {
-			var err error
-			rawData, err = selectedParser.FetchResult(ctx, contract.TaskID, resultURL)
-			return err
-		})
-		if err != nil {
-			slog.Error("failed to fetch result",
-				"trace_id", traceID,
-				"contract_id", contract.ID,
-				"error", err,
-			)
-			h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch result: "+err.Error())
-			return
-		}
+	err := tracker.Track("fetch_result", func() error {
+		var err error
+		rawData, err = selectedParser.FetchResult(ctx, contract.TaskID, resultURL)
+		return err
+	})
+	if err != nil {
+		slog.Error("failed to fetch parser result",
+			"trace_id", traceID,
+			"contract_id", contract.ID,
+			"error", err,
+		)
+		h.store.UpdateFailure(contract.ID, "parser", "Failed to fetch result: "+err.Error())
+		return
+	}
+	if rawData == nil {
+		h.store.UpdateFailure(contract.ID, "parser", "Parser returned an empty result")
+		return
 	}
 
+	contract.RawJSONData = rawData
+	if !h.store.SaveIfNotTerminal(contract) {
+		slog.Warn("parser result was superseded by a terminal state", "contract_id", contract.ID)
+		return
+	}
 	var normalizedData map[string]interface{}
-	err := tracker.Track("normalize", func() error {
+	err = tracker.Track("normalize", func() error {
 		var err error
 		normalizedData, err = selectedParser.NormalizeResult(rawData)
 		return err
@@ -601,26 +653,389 @@ fetchResult:
 			"contract_id", contract.ID,
 			"error", err,
 		)
-		h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to normalize result: "+err.Error())
+		h.store.UpdateFailure(contract.ID, "normalization", "Failed to normalize result: "+err.Error())
 		return
 	}
 
+	coordinateStatus, coordinateWarnings := validateNormalizedCoordinates(normalizedData, contract.Metadata.PDFPages)
+	contract.CoordinateStatus = coordinateStatus
+	contract.CoordinateWarnings = coordinateWarnings
+	attachCanonicalPDFMetadata(normalizedData, contract)
+
 	processingDuration := tracker.TotalDuration()
 	contract.Metadata.ProcessingDuration = processingDuration.Milliseconds()
+	contract.Metadata.Steps = map[string]int64{}
+	for _, step := range tracker.Steps() {
+		contract.Metadata.Steps[step.Name] = step.Duration.Milliseconds()
+	}
 
 	contract.JSONData = normalizedData
 	contract.RawJSONData = rawData
 	contract.Status = model.StatusCompleted
+	contract.FailureStage = ""
+	contract.ErrorMsg = ""
 	contract.UpdatedAt = time.Now()
-	h.store.Save(contract)
+	if !h.store.SaveIfNotTerminal(contract) {
+		slog.Warn("completed result was superseded by a terminal state", "contract_id", contract.ID)
+		return
+	}
 
 	slog.Info("document processing completed",
 		"trace_id", traceID,
 		"contract_id", contract.ID,
 		"total_duration_ms", processingDuration.Milliseconds(),
 		"parser_type", contract.ParserType,
-		"has_pdf", contract.ConvertedFileURL != "",
+		"has_pdf", contract.PDFObjectKey != "" || contract.GetPDFURL() != "",
 	)
+}
+
+func toModelPDFPages(info pdfcheck.Info) []model.PDFPageMetadata {
+	pages := make([]model.PDFPageMetadata, 0, len(info.Pages))
+	for _, page := range info.Pages {
+		pages = append(pages, model.PDFPageMetadata{
+			PageIdx:  page.Index,
+			Width:    page.Width,
+			Height:   page.Height,
+			Rotation: page.Rotation,
+			CropBox:  page.CropBox,
+		})
+	}
+	return pages
+}
+
+func (h *ContractHandler) cachePDFUsable(ctx context.Context, contract *model.Contract, maxBytes int64) bool {
+	if contract == nil || contract.Status != model.StatusCompleted || contract.JSONData == nil ||
+		contract.ProcessingSignature == "" || contract.PDFHash == "" || contract.ResultSignature == "" {
+		return false
+	}
+	if contract.ResultSignature != parser.ResultSignature(contract.PDFHash, contract.ProcessingSignature) {
+		return false
+	}
+	_, info, err := h.loadCanonicalPDF(ctx, contract, maxBytes)
+	return err == nil && info.SHA256 == contract.PDFHash
+}
+
+func (h *ContractHandler) loadCanonicalPDF(ctx context.Context, contract *model.Contract, maxBytes int64) ([]byte, pdfcheck.Info, error) {
+	if contract == nil {
+		return nil, pdfcheck.Info{}, fmt.Errorf("contract is missing")
+	}
+	if maxBytes <= 0 {
+		maxBytes = pdfcheck.DefaultMaxBytes
+	}
+
+	key := contract.PDFObjectKey
+	if key == "" && contract.OriginalFormat == "pdf" {
+		// This is the only legacy fallback retained: an original PDF object is
+		// still a possible canonical PDF after structural validation. A DOCX
+		// object is never accepted here.
+		key = contract.FileObjectKey
+	}
+	if key != "" {
+		if h.minioService == nil {
+			return nil, pdfcheck.Info{}, fmt.Errorf("PDF storage is unavailable")
+		}
+		reader, contentType, err := h.minioService.OpenFile(ctx, key)
+		if err != nil {
+			return nil, pdfcheck.Info{}, fmt.Errorf("failed to fetch PDF object: %w", err)
+		}
+		defer reader.Close()
+		if !isPDFContentType(contentType) {
+			return nil, pdfcheck.Info{}, fmt.Errorf("PDF object has content type %q", contentType)
+		}
+		data, err := readLimitedBytes(reader, maxBytes)
+		if err != nil {
+			return nil, pdfcheck.Info{}, err
+		}
+		info, err := validateCanonicalPDF(data, contract.PDFHash, maxBytes)
+		return data, info, err
+	}
+
+	pdfURL := contract.GetPDFURL()
+	if pdfURL == "" {
+		return nil, pdfcheck.Info{}, fmt.Errorf("PDF object is not recorded")
+	}
+	if h.httpClient == nil {
+		return nil, pdfcheck.Info{}, fmt.Errorf("PDF HTTP client is unavailable")
+	}
+	resp, err := h.httpClient.R(ctx).SetResponseBodyLimit(int(maxBytes)).Get(pdfURL)
+	if err != nil {
+		return nil, pdfcheck.Info{}, fmt.Errorf("failed to fetch PDF URL: %w", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		return nil, pdfcheck.Info{}, fmt.Errorf("PDF URL returned status %d", resp.StatusCode())
+	}
+	if !isPDFContentType(resp.Header().Get("Content-Type")) {
+		return nil, pdfcheck.Info{}, fmt.Errorf("PDF URL returned content type %q", resp.Header().Get("Content-Type"))
+	}
+	data := resp.Body()
+	info, err := validateCanonicalPDF(data, contract.PDFHash, maxBytes)
+	return data, info, err
+}
+
+func validateCanonicalPDF(data []byte, expectedHash string, maxBytes int64) (pdfcheck.Info, error) {
+	info, err := pdfcheck.Validate(data, pdfcheck.Options{MaxBytes: maxBytes})
+	if err != nil {
+		return pdfcheck.Info{}, err
+	}
+	if expectedHash != "" && info.SHA256 != expectedHash {
+		return pdfcheck.Info{}, fmt.Errorf("PDF SHA256 does not match the recorded canonical PDF")
+	}
+	return info, nil
+}
+
+func readLimitedBytes(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = pdfcheck.DefaultMaxBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PDF: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("PDF exceeds maximum size of %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
+func isPDFContentType(contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	return contentType == "" || contentType == "application/pdf" || contentType == "application/octet-stream"
+}
+
+type coordinateStats struct {
+	textBlocks int
+	located    int
+	invalid    int
+}
+
+// validateNormalizedCoordinates verifies parser coordinates against the
+// canonical PDF geometry. Missing coordinates are reported as a degraded
+// result; they are never inferred from text position or page order.
+func validateNormalizedCoordinates(data map[string]interface{}, pages []model.PDFPageMetadata) (string, []string) {
+	warnings := []string{}
+	if len(pages) == 0 {
+		return "unavailable", []string{"解析输入 PDF 没有可用的页面几何信息"}
+	}
+
+	metadata, _ := data["metadata"].(map[string]interface{})
+	if pageCount, ok := numberValue(metadata["page_count"]); ok && int(pageCount) != len(pages) {
+		warnings = append(warnings, fmt.Sprintf("解析结果页数 %d 与解析输入 PDF 页数 %d 不一致", int(pageCount), len(pages)))
+	}
+	if sizes, ok := metadata["page_sizes"].([]interface{}); ok {
+		for index, value := range sizes {
+			size, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			pageIndex := index
+			if n, ok := numberValue(size["page_idx"]); ok {
+				pageIndex = int(n)
+			}
+			if pageIndex < 0 || pageIndex >= len(pages) {
+				warnings = append(warnings, "解析结果包含超出 PDF 页数的页面尺寸")
+				continue
+			}
+			width, widthOK := numberValue(size["width"])
+			height, heightOK := numberValue(size["height"])
+			if widthOK && heightOK && (math.Abs(width-pages[pageIndex].Width) > 2 || math.Abs(height-pages[pageIndex].Height) > 2) {
+				warnings = append(warnings, fmt.Sprintf("解析结果第 %d 页尺寸与预览 PDF 不一致", pageIndex+1))
+			}
+		}
+	}
+
+	stats := coordinateStats{}
+	for _, key := range []string{"paragraphs", "tables", "images"} {
+		if values, ok := data[key].([]interface{}); ok {
+			for _, value := range values {
+				walkCoordinateNode(value, -1, nil, pages, &stats)
+			}
+		}
+	}
+	if stats.invalid > 0 {
+		warnings = append(warnings, "部分解析文本缺少坐标或坐标超出 PDF 页面范围，相关差异无法定位")
+	}
+	if stats.textBlocks == 0 {
+		warnings = append(warnings, "解析结果没有可定位文本")
+		return "unavailable", uniqueStrings(warnings)
+	}
+	if stats.located == 0 {
+		return "unavailable", uniqueStrings(warnings)
+	}
+	if stats.invalid > 0 || len(warnings) > 0 {
+		return "partial", uniqueStrings(warnings)
+	}
+	return "complete", nil
+}
+
+func walkCoordinateNode(value interface{}, parentPage int, inherited []float64, pages []model.PDFPageMetadata, stats *coordinateStats) {
+	node, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	page := parentPage
+	if n, ok := numberValue(node["page"]); ok {
+		page = int(n) - 1
+	} else if n, ok := numberValue(node["page_idx"]); ok {
+		page = int(n)
+	}
+	var box []float64
+	if parsedBox, hasBox := bboxValue(node["bbox"]); hasBox {
+		box = *parsedBox
+	} else {
+		box = inherited
+	}
+
+	if cells, ok := node["cells"].([]interface{}); ok {
+		for _, cell := range cells {
+			walkCoordinateNode(cell, page, box, pages, stats)
+		}
+		return
+	}
+	if blocks, ok := node["blocks"].([]interface{}); ok && len(blocks) > 0 {
+		for _, block := range blocks {
+			walkCoordinateNode(block, page, box, pages, stats)
+		}
+		return
+	}
+	if lines, ok := node["lines"].([]interface{}); ok && len(lines) > 0 {
+		for _, line := range lines {
+			walkCoordinateNode(line, page, box, pages, stats)
+		}
+		return
+	}
+	if spans, ok := node["spans"].([]interface{}); ok && len(spans) > 0 {
+		for _, span := range spans {
+			walkCoordinateNode(span, page, box, pages, stats)
+		}
+		return
+	}
+
+	text := stringValue(node["text"])
+	if text == "" {
+		text = stringValue(node["content"])
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	stats.textBlocks++
+	if page < 0 || page >= len(pages) || box == nil || !validBBox(box, pages[page]) {
+		stats.invalid++
+		return
+	}
+	stats.located++
+}
+
+func numberValue(value interface{}) (float64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return number, !math.IsNaN(number) && !math.IsInf(number, 0)
+	case float32:
+		return float64(number), !math.IsNaN(float64(number)) && !math.IsInf(float64(number), 0)
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	default:
+		return 0, false
+	}
+}
+
+func stringValue(value interface{}) string {
+	text, _ := value.(string)
+	return text
+}
+
+func bboxValue(value interface{}) (*[]float64, bool) {
+	var raw []interface{}
+	switch bbox := value.(type) {
+	case []interface{}:
+		raw = bbox
+	case []float64:
+		if len(bbox) != 4 {
+			return nil, false
+		}
+		copy := append([]float64(nil), bbox...)
+		return &copy, true
+	case [4]float64:
+		copy := []float64{bbox[0], bbox[1], bbox[2], bbox[3]}
+		return &copy, true
+	default:
+		return nil, false
+	}
+	if len(raw) != 4 {
+		return nil, false
+	}
+	result := make([]float64, 4)
+	for index, value := range raw {
+		number, ok := numberValue(value)
+		if !ok {
+			return nil, false
+		}
+		result[index] = number
+	}
+	return &result, true
+}
+
+func validBBox(bbox []float64, page model.PDFPageMetadata) bool {
+	if len(bbox) != 4 || !finiteNumbers(bbox) || bbox[2] < bbox[0] || bbox[3] < bbox[1] {
+		return false
+	}
+	return bbox[0] >= -1 && bbox[1] >= -1 && bbox[2] <= page.Width+1 && bbox[3] <= page.Height+1
+}
+
+func finiteNumbers(values []float64) bool {
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func attachCanonicalPDFMetadata(data map[string]interface{}, contract *model.Contract) {
+	if data == nil || contract == nil {
+		return
+	}
+	metadata, _ := data["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+		data["metadata"] = metadata
+	}
+	if contract.Metadata == nil {
+		return
+	}
+	if parserPageCount, ok := numberValue(metadata["page_count"]); ok {
+		metadata["parser_page_count"] = int(parserPageCount)
+	}
+	metadata["pdf_hash"] = contract.PDFHash
+	metadata["processing_signature"] = contract.ProcessingSignature
+	metadata["result_signature"] = contract.ResultSignature
+	metadata["page_count"] = len(contract.Metadata.PDFPages)
+	metadata["pdf_pages"] = make([]interface{}, 0, len(contract.Metadata.PDFPages))
+	for _, page := range contract.Metadata.PDFPages {
+		metadata["pdf_pages"] = append(metadata["pdf_pages"].([]interface{}), map[string]interface{}{
+			"page_idx": page.PageIdx,
+			"width":    page.Width,
+			"height":   page.Height,
+			"rotation": page.Rotation,
+			"crop_box": page.CropBox,
+		})
+	}
+	metadata["coordinate_status"] = contract.CoordinateStatus
+	metadata["coordinate_warnings"] = append([]string(nil), contract.CoordinateWarnings...)
 }
 
 func buildParserFailureMessage(status *parser.TaskStatus) string {
@@ -722,7 +1137,7 @@ func (h *ContractHandler) List(c *gin.Context) {
 			"id":         contract.ID,
 			"filename":   contract.Filename,
 			"status":     contract.Status,
-			"pdf_url":    contract.PDFURL,
+			"pdf_url":    contract.GetPDFURL(),
 			"created_at": contract.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 			"updated_at": contract.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		}
@@ -742,6 +1157,9 @@ func (h *ContractHandler) Get(c *gin.Context) {
 		return
 	}
 
+	if c.Query("include_raw") != "true" {
+		contract.RawJSONData = nil
+	}
 	c.JSON(http.StatusOK, contract)
 }
 
@@ -757,9 +1175,12 @@ func (h *ContractHandler) GetStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":        contract.ID,
-		"status":    contract.Status,
-		"error_msg": contract.ErrorMsg,
+		"id":                  contract.ID,
+		"status":              contract.Status,
+		"error_msg":           contract.ErrorMsg,
+		"failure_stage":       contract.FailureStage,
+		"coordinate_status":   contract.CoordinateStatus,
+		"coordinate_warnings": contract.CoordinateWarnings,
 	})
 }
 
@@ -796,32 +1217,20 @@ func (h *ContractHandler) GetPDF(c *gin.Context) {
 		return
 	}
 
-	pdfURL := contract.GetPDFURL()
-	if pdfURL == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "PDF not available"})
-		return
-	}
-
-	resp, err := h.httpClient.Get(c.Request.Context(), pdfURL)
+	pdfData, _, err := h.loadCanonicalPDF(c.Request.Context(), contract, pdfcheck.DefaultMaxBytes)
 	if err != nil {
-		slog.Error("failed to fetch PDF",
+		slog.Error("failed to validate PDF preview",
 			"contract_id", id,
 			"error", err,
 		)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF"})
-		return
-	}
-
-	if resp.StatusCode() != http.StatusOK {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch PDF from storage"})
+		c.Header("X-Contract-Failure-Stage", "preview")
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "PDF preview validation failed: " + err.Error()})
 		return
 	}
 
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s.pdf\"", contract.ID))
-
-	_, err = c.Writer.Write(resp.Body())
-	if err != nil {
+	if _, err := c.Writer.Write(pdfData); err != nil {
 		slog.Error("failed to write PDF",
 			"contract_id", id,
 			"error", err,
@@ -860,6 +1269,7 @@ func (h *ContractHandler) ReNormalize(c *gin.Context) {
 	}
 
 	contract.JSONData = normalizedData
+	contract.NormalizationVersion = parser.NormalizationVersion
 	h.store.Save(contract)
 
 	slog.Info("contract re-normalized",

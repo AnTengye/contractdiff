@@ -1,7 +1,7 @@
 // Stats panel component - inline version below compare button
 import { diffStore } from '@/store';
 import { getElementById } from '@/utils/dom';
-import type { DiffStats } from '@/types';
+import type { DiffStats } from '@/store/diffStore';
 
 export class StatsPanel {
   private elements: {
@@ -29,6 +29,10 @@ export class StatsPanel {
   }
 
   private render(stats: DiffStats): void {
+    const modified = document.getElementById('inline-stat-modified'),
+      moved = document.getElementById('inline-stat-moved');
+    if (modified) modified.textContent = String(stats.modified);
+    if (moved) moved.textContent = String(stats.moved);
     if (!this.elements.container) return;
 
     if (stats.total > 0) {

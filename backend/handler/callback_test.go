@@ -150,3 +150,23 @@ func TestCallbackHandlerFailedState(t *testing.T) {
 
 	store.Delete("callback-failed-test")
 }
+
+func TestCallbackHandlerLateDoneDoesNotReopenCompletedContract(t *testing.T) {
+	store := service.GetContractStore()
+	store.Save(&model.Contract{ID: "callback-terminal-test", Status: model.StatusCompleted, CreatedAt: time.Now()})
+	defer store.Delete("callback-terminal-test")
+
+	router := gin.New()
+	router.POST("/callback", NewCallbackHandler(nil).HandleCallback)
+	body, _ := json.Marshal(map[string]interface{}{
+		"content": `{"data_id":"callback-terminal-test","state":"done"}`,
+	})
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/callback", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected callback success, got %d", w.Code)
+	}
+	if got := store.Get("callback-terminal-test"); got.Status != model.StatusCompleted {
+		t.Fatalf("late callback reopened contract as %s", got.Status)
+	}
+}

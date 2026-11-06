@@ -81,6 +81,10 @@ setData(
     }));
   },
 
+  setContractId(side: 'left' | 'right', contractId: string) {
+    contractStore.setState(state=>({[side]:{...state[side],contractId}}));
+  },
+
   setUploadProgress(side: 'left' | 'right', progress: number, text: string) {
     contractStore.setState(state => ({
       [side]: {
@@ -105,12 +109,27 @@ setData(
   },
 
   setCancelToken(side: 'left' | 'right', token: CancelToken | null) {
+    const previous = contractStore.getState().cancelTokens[side];
+    if (token && previous && previous !== token) previous.cancelled = true;
     contractStore.setState(state => ({
       cancelTokens: {
         ...state.cancelTokens,
         [side]: token,
       },
     }));
+  },
+
+  clearCancelToken(side: 'left' | 'right', token: CancelToken) {
+    contractStore.setState(state =>
+      state.cancelTokens[side] === token
+        ? {
+            cancelTokens: {
+              ...state.cancelTokens,
+              [side]: null,
+            },
+          }
+        : {}
+    );
   },
 
   cancelUpload(side: 'left' | 'right') {

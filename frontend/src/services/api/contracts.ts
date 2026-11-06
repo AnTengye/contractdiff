@@ -146,7 +146,7 @@ export async function pollForResult(
 
     attempts++;
     const progress = 30 + Math.min(60, (attempts / POLLING.MAX_ATTEMPTS) * 60);
-    onProgress?.(progress, `MinerU 处理中... (${attempts}/${POLLING.MAX_ATTEMPTS})`);
+    onProgress?.(progress, `文档解析中... (${attempts}/${POLLING.MAX_ATTEMPTS})`);
 
     try {
       const status = await getContractStatus(contractId);

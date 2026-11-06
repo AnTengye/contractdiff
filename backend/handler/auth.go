@@ -70,7 +70,8 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	tenant := middleware.GetTenant(c)
 
 	c.JSON(http.StatusOK, gin.H{
-		"username": username,
-		"tenant":   tenant,
+		"username":            username,
+		"tenant":              tenant,
+		"can_review_feedback": CanReviewFeedback(h.config, username),
 	})
 }

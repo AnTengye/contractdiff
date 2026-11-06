@@ -17,6 +17,12 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification"`
 	Timing       TimingConfig       `yaml:"timing"` // Performance timing and alerting
 	Users        []User             `yaml:"users"`
+	Feedback     FeedbackConfig     `yaml:"feedback"`
+}
+
+type FeedbackConfig struct {
+	DBPath    string   `yaml:"db_path"`
+	Reviewers []string `yaml:"reviewers"`
 }
 
 type LogConfig struct {
@@ -38,14 +44,16 @@ type MinioConfig struct {
 }
 
 type MineruConfig struct {
-	Enabled        bool   `yaml:"enabled"` // NEW: Enable/disable this parser
-	APIURL         string `yaml:"api_url"`
-	APIToken       string `yaml:"api_token"`
-	ModelVersion   string `yaml:"model_version"`
-	CallbackURL    string `yaml:"callback_url"`
-	Seed           string `yaml:"seed"`
-	TokenCreatedAt string `yaml:"token_created_at"` // RFC3339 format, when token was created/refreshed
-	TokenValidDays int    `yaml:"token_valid_days"` // Token validity period in days, default 14
+	Enabled            bool   `yaml:"enabled"` // NEW: Enable/disable this parser
+	APIURL             string `yaml:"api_url"`
+	APIToken           string `yaml:"api_token"`
+	ModelVersion       string `yaml:"model_version"`
+	ModelRevision      string `yaml:"model_revision"` // Declared deployment revision, used to invalidate the parse cache
+	CallbackURL        string `yaml:"callback_url"`
+	Seed               string `yaml:"seed"`
+	TokenCreatedAt     string `yaml:"token_created_at"`      // RFC3339 format, when token was created/refreshed
+	TokenValidDays     int    `yaml:"token_valid_days"`      // Token validity period in days, default 14
+	MaxResultSizeBytes int64  `yaml:"max_result_size_bytes"` // Maximum downloaded MinerU ZIP/result size
 }
 
 // ParsersConfig contains configuration for all parsers
@@ -61,6 +69,7 @@ type ParsersConfig struct {
 type PaddleOCRConfig struct {
 	Enabled                   bool   `yaml:"enabled"`
 	APIURL                    string `yaml:"api_url"`
+	ModelRevision             string `yaml:"model_revision"`
 	APIToken                  string `yaml:"api_token"`
 	UseDocOrientationClassify *bool  `yaml:"use_doc_orientation_classify"` // Optional: document orientation detection
 	UseDocUnwarping           *bool  `yaml:"use_doc_unwarping"`            // Optional: document unwarping
@@ -93,11 +102,15 @@ type RAGFlowConfig struct {
 
 // GotenbergConfig for DOCX to PDF conversion
 type GotenbergConfig struct {
-	Enabled           bool   `yaml:"enabled"`
-	APIURL            string `yaml:"api_url"`             // e.g., "http://gotenberg:3000"
-	BasicAuthUser     string `yaml:"basic_auth_user"`     // Optional: Basic Auth username
-	BasicAuthPassword string `yaml:"basic_auth_password"` // Optional: Basic Auth password
-	Timeout           int    `yaml:"timeout"`             // Conversion timeout in seconds
+	Enabled                bool   `yaml:"enabled"`
+	APIURL                 string `yaml:"api_url"`             // e.g., "http://gotenberg:3000"
+	BasicAuthUser          string `yaml:"basic_auth_user"`     // Optional: Basic Auth username
+	BasicAuthPassword      string `yaml:"basic_auth_password"` // Optional: Basic Auth password
+	Timeout                int    `yaml:"timeout"`             // Conversion timeout in seconds
+	Revision               string `yaml:"revision"`            // Bump for image/font/export changes
+	MaxInputBytes          int64  `yaml:"max_input_bytes"`
+	MaxOutputBytes         int64  `yaml:"max_output_bytes"`
+	ReadRateBytesPerSecond int64  `yaml:"read_rate_bytes_per_second"`
 }
 
 type AuthConfig struct {
@@ -159,6 +172,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Set defaults
+	if cfg.Feedback.DBPath == "" {
+		cfg.Feedback.DBPath = "data/feedback.db"
+	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
@@ -179,6 +195,9 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.Parsers.MinerU.TokenValidDays == 0 {
 			cfg.Parsers.MinerU.TokenValidDays = 14
+		}
+		if cfg.Parsers.MinerU.MaxResultSizeBytes == 0 {
+			cfg.Parsers.MinerU.MaxResultSizeBytes = 50 << 20
 		}
 	}
 
@@ -204,6 +223,18 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Gotenberg.Timeout == 0 {
 		cfg.Gotenberg.Timeout = 60
+	}
+	if cfg.Gotenberg.Revision == "" {
+		cfg.Gotenberg.Revision = "gotenberg-pdf-v1"
+	}
+	if cfg.Gotenberg.MaxInputBytes == 0 {
+		cfg.Gotenberg.MaxInputBytes = 50 << 20
+	}
+	if cfg.Gotenberg.MaxOutputBytes == 0 {
+		cfg.Gotenberg.MaxOutputBytes = 50 << 20
+	}
+	if cfg.Gotenberg.ReadRateBytesPerSecond == 0 {
+		cfg.Gotenberg.ReadRateBytesPerSecond = 10 << 20
 	}
 
 	if cfg.Log.Level == "" {

@@ -37,3 +37,16 @@ func TestContractStatusConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestContractGetPDFURLNeverFallsBackToDOCX(t *testing.T) {
+	contract := &Contract{OriginalFormat: "docx", FileURL: "https://example.test/source.docx", PDFURL: "https://example.test/source.docx"}
+	if got := contract.GetPDFURL(); got != "" {
+		t.Fatalf("DOCX URL was exposed as PDF: %q", got)
+	}
+	contract.ConvertedFileURL = "https://example.test/converted.pdf"
+	contract.PDFHash = "verified-pdf-hash"
+	contract.PDFObjectKey = "tenant/contract/converted.pdf"
+	if got := contract.GetPDFURL(); got != contract.ConvertedFileURL {
+		t.Fatalf("converted PDF URL was not selected: %q", got)
+	}
+}

@@ -3,13 +3,96 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/AnTengye/contractdiff/backend/config"
 )
+
+func newMinioReadTestService(t *testing.T, objectStatus int) (*MinioService, *atomic.Int32) {
+	t.Helper()
+	var heads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("location") {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`)
+			return
+		}
+		if r.Method == http.MethodHead {
+			heads.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Query().Get("X-Amz-Signature") == "" || r.Header.Get("Authorization") != "" {
+			t.Error("object read did not use a presigned GET")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(objectStatus)
+		fmt.Fprint(w, "%PDF-1.7\ncanonical PDF bytes")
+	}))
+	t.Cleanup(server.Close)
+	svc, err := NewMinioService(&config.MinioConfig{
+		Endpoint: strings.TrimPrefix(server.URL, "http://"), AccessKey: "test-access-key",
+		SecretKey: "test-secret-key", Bucket: "test-bucket", ExpireDays: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, &heads
+}
+
+func TestMinioServiceOpenFileUsesSignedGETWithoutHEAD(t *testing.T) {
+	svc, heads := newMinioReadTestService(t, http.StatusOK)
+	reader, contentType, err := svc.OpenFile(context.Background(), "test.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "%PDF-1.7\ncanonical PDF bytes" || contentType != "application/pdf" {
+		t.Fatalf("unexpected object response: content type %q, size %d", contentType, len(data))
+	}
+	if heads.Load() != 0 {
+		t.Fatal("object read issued a HEAD request")
+	}
+}
+
+func TestMinioServiceOpenFileRejectsForbiddenGET(t *testing.T) {
+	svc, _ := newMinioReadTestService(t, http.StatusForbidden)
+	reader, _, err := svc.OpenFile(context.Background(), "test.pdf")
+	if err == nil || reader != nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("unexpected forbidden response: reader %v, error %v", reader, err)
+	}
+}
+
+type minioReadTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f minioReadTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestMinioServiceOpenFileRedactsSignedURLFromErrors(t *testing.T) {
+	svc, _ := newMinioReadTestService(t, http.StatusOK)
+	svc.httpClient.Transport = minioReadTransportFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("network unavailable")
+	})
+	_, _, err := svc.OpenFile(context.Background(), "test.pdf")
+	if err == nil || !strings.Contains(err.Error(), "network unavailable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "X-Amz-") || strings.Contains(err.Error(), "test-access-key") {
+		t.Fatal("object read error exposed the presigned URL")
+	}
+}
 
 func TestNewMinioService(t *testing.T) {
 	// Test with invalid endpoint (should fail)

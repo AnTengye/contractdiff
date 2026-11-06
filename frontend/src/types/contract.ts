@@ -46,8 +46,8 @@ export interface ContractData {
 export interface BlockReference {
   blockIdx: number;
   pageIdx: number;
-  bbox: [number, number, number, number];
-  pageSize: [number, number];
+  bbox?: [number, number, number, number];
+  pageSize?: [number, number];
   text: string;
 }
 

@@ -1,128 +1,118 @@
-// Types for the new text diff engine v2 (using jsdiff)
-
-/**
- * Span with content and bounding box from backend JSON
- */
+export type Bbox = [number, number, number, number];
+export type CoordinatePrecision = 'character' | 'span' | 'line' | 'cell' | 'block' | 'unknown';
 export interface Span {
   content: string;
-  bbox?: [number, number, number, number];
+  bbox?: Bbox;
+  html?: string;
+  chars?: Array<{ content: string; bbox: Bbox }>;
 }
-
-/**
- * Line containing spans
- */
 export interface Line {
   spans: Span[];
-  bbox?: [number, number, number, number];
+  bbox?: Bbox;
 }
-
-/**
- * Block from backend with position information
- */
+export interface TableCell {
+  row: number;
+  col: number;
+  rowspan?: number;
+  colspan?: number;
+  text: string;
+  bbox?: Bbox;
+  coordinate_precision?: CoordinatePrecision;
+}
 export interface Block {
   type?: string;
-  bbox?: [number, number, number, number];
+  bbox?: Bbox;
   lines?: Line[];
-  blocks?: Block[]; // Nested blocks (for lists, etc.)
+  blocks?: Block[];
   index?: number;
-  page?: number; // 1-indexed page number
-  text?: string; // Direct text content (PaddleOCR format)
+  page?: number;
+  text?: string;
+  html?: string;
+  cells?: TableCell[];
 }
-
-/**
- * Page info from backend
- */
 export interface PageInfo {
   page_idx: number;
   page_size?: [number, number];
   para_blocks?: Block[];
 }
-
-/**
- * Contract data from backend API
- */
 export interface ContractData {
   pdf_info?: PageInfo[];
   paragraphs?: Block[];
+  tables?: Block[];
   pdf_url?: string;
+  metadata?: {
+    page_sizes?: Array<{ page_idx: number; width: number; height: number }>;
+    [key: string]: unknown;
+  };
 }
-
-/**
- * A text segment with its source position information
- * Used to map diff results back to original coordinates
- */
 export interface TextSegment {
   text: string;
   pageIdx: number;
   blockIdx: number;
   lineIdx: number;
   spanIdx: number;
-  bbox?: [number, number, number, number];
+  bbox?: Bbox;
   pageSize?: [number, number];
-  // Character offset in the full concatenated text
+  precision?: CoordinatePrecision;
   startOffset: number;
   endOffset: number;
 }
-
-/**
- * Diff operation types (compatible with jsdiff)
- */
-export type DiffType = 'added' | 'removed' | 'unchanged';
-
-/**
- * A single diff change with position mapping
- */
+export interface TextUnit {
+  text: string;
+  kind: string;
+  structure: string;
+  anchor?: string;
+  startOffset: number;
+  endOffset: number;
+  blockIdx: number;
+}
+export type DiffType = 'added' | 'removed' | 'unchanged' | 'moved';
 export interface DiffChange {
   type: DiffType;
+  operation?: 'modified';
   text: string;
-  // Position in original (left) document
+  leftText?: string;
+  rightText?: string;
+  diffId?: number;
   leftStartOffset?: number;
   leftEndOffset?: number;
-  // Position in modified (right) document
   rightStartOffset?: number;
   rightEndOffset?: number;
 }
-
-/**
- * A rendered diff segment for display
- * Contains the text, its visual position, and diff status
- */
 export interface RenderSegment {
   text: string;
   type: DiffType;
   pageIdx: number;
   blockIdx?: number;
-  bbox?: [number, number, number, number];
+  bbox?: Bbox;
   pageSize?: [number, number];
+  precision?: CoordinatePrecision;
+  diffId?: number;
 }
-
-/**
- * Complete diff result for one side (left or right)
- */
 export interface SideDiffResult {
   segments: RenderSegment[];
   fullText: string;
   textSegments: TextSegment[];
 }
-
-/**
- * Complete text diff result
- */
 export interface TextDiffResultV2 {
   left: SideDiffResult;
   right: SideDiffResult;
   changes: DiffChange[];
   stats: DiffStats;
+  metadata?: {
+    engineVersion: string;
+    buildRevision?: string;
+    options: Record<string, unknown>;
+    durationMs: number;
+    warnings: string[];
+  };
 }
-
-/**
- * Diff statistics
- */
 export interface DiffStats {
   totalChanges: number;
   additions: number;
   deletions: number;
   modifications: number;
+  moves: number;
   unchangedChars: number;
   addedChars: number;
   removedChars: number;

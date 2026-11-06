@@ -4,12 +4,15 @@ import { getToken, setToken, setUser, clearAuth, type AuthUser } from '@/utils/a
 
 interface LoginResponse {
   token: string;
-  user: AuthUser;
+  user?: AuthUser;
+  username?: string;
+  tenant?: string;
 }
 
 interface MeResponse {
   username: string;
   tenant: string;
+  can_review_feedback?: boolean;
 }
 
 /**
@@ -31,8 +34,9 @@ export async function login(username: string, password: string): Promise<AuthUse
 
   const data: LoginResponse = await response.json();
   setToken(data.token);
-  setUser(data.user);
-  return data.user;
+  const user = data.user ?? { username: data.username ?? username, tenant: data.tenant ?? '' };
+  setUser(user);
+  return user;
 }
 
 /**
@@ -60,6 +64,7 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     return {
       username: data.username,
       tenant: data.tenant,
+      can_review_feedback: data.can_review_feedback ?? false,
     };
   } catch {
     return null;

@@ -138,6 +138,93 @@ func TestContractStoreUpdateJSONData(t *testing.T) {
 	// Should not panic
 }
 
+func TestContractStoreDeepCopiesPublishedResults(t *testing.T) {
+	store := newTestStore(100)
+	raw := map[string]interface{}{
+		"nested": map[string]interface{}{"value": "original"},
+		"items":  []interface{}{map[string]interface{}{"value": "item"}},
+	}
+	store.Save(&model.Contract{ID: "deep-copy", RawJSONData: raw, CreatedAt: time.Now()})
+
+	raw["nested"].(map[string]interface{})["value"] = "caller mutation"
+	raw["items"].([]interface{})[0].(map[string]interface{})["value"] = "caller mutation"
+	got := store.Get("deep-copy")
+	if got.RawJSONData.(map[string]interface{})["nested"].(map[string]interface{})["value"] != "original" {
+		t.Fatal("store retained a mutable nested raw result")
+	}
+	got.RawJSONData.(map[string]interface{})["nested"].(map[string]interface{})["value"] = "reader mutation"
+	if store.Get("deep-copy").RawJSONData.(map[string]interface{})["nested"].(map[string]interface{})["value"] != "original" {
+		t.Fatal("store exposed mutable nested raw result")
+	}
+}
+
+func TestContractStoreTerminalStatusCannotBeReopened(t *testing.T) {
+	store := newTestStore(100)
+	store.Save(&model.Contract{ID: "terminal", Status: model.StatusCompleted, CreatedAt: time.Now()})
+	if store.UpdateStatusIfNotTerminal("terminal", model.StatusProcessing, "") {
+		t.Fatal("terminal status was unexpectedly updated")
+	}
+	if got := store.Get("terminal"); got.Status != model.StatusCompleted {
+		t.Fatalf("terminal status changed to %s", got.Status)
+	}
+}
+
+func TestContractStorePipelineSignatureRejectsLegacyRecord(t *testing.T) {
+	store := newTestStore(100)
+	store.Save(&model.Contract{
+		ID:                  "pipeline-current",
+		Tenant:              "tenant",
+		FileHash:            "original-hash",
+		ProcessingSignature: "pipeline-v1",
+		PDFHash:             "pdf-hash",
+		ResultSignature:     "result-signature",
+		Status:              model.StatusCompleted,
+		JSONData:            map[string]interface{}{"ok": true},
+		CreatedAt:           time.Now(),
+	})
+	store.Save(&model.Contract{
+		ID:              "pipeline-legacy",
+		Tenant:          "tenant",
+		FileHash:        "legacy-hash",
+		ParserSignature: "parser-v1",
+		Status:          model.StatusCompleted,
+		JSONData:        map[string]interface{}{"ok": true},
+		CreatedAt:       time.Now(),
+	})
+	if got := store.FindParsedPipeline("tenant", "original-hash", "pipeline-v1"); got == nil {
+		t.Fatal("current pipeline result was not found")
+	}
+	if got := store.FindParsedPipeline("tenant", "legacy-hash", "pipeline-v1"); got != nil {
+		t.Fatal("legacy record was incorrectly treated as a current pipeline hit")
+	}
+}
+
+func TestContractStoreTaskIDUpdatePreservesStatus(t *testing.T) {
+	store := newTestStore(100)
+	store.Save(&model.Contract{ID: "task", Status: model.StatusProcessing, CreatedAt: time.Now()})
+	if !store.UpdateTaskID("task", "task-1") {
+		t.Fatal("task update did not find contract")
+	}
+	got := store.Get("task")
+	if got.TaskID != "task-1" || got.Status != model.StatusProcessing {
+		t.Fatalf("task update lost state: %#v", got)
+	}
+}
+
+func TestContractStoreRejectsStaleWorkerSaveAfterFailure(t *testing.T) {
+	store := newTestStore(100)
+	store.Save(&model.Contract{ID: "stale-worker", Status: model.StatusProcessing, CreatedAt: time.Now()})
+	store.UpdateFailure("stale-worker", "parser", "upstream failed")
+	stale := &model.Contract{ID: "stale-worker", Status: model.StatusProcessing, JSONData: map[string]interface{}{"late": true}, CreatedAt: time.Now()}
+	if store.SaveIfNotTerminal(stale) {
+		t.Fatal("stale worker snapshot was accepted after failure")
+	}
+	got := store.Get("stale-worker")
+	if got.Status != model.StatusFailed || got.JSONData != nil {
+		t.Fatalf("terminal failure was overwritten: %#v", got)
+	}
+}
+
 func TestContractStoreAutoCleanup(t *testing.T) {
 	store := newTestStore(3) // Max 3 contracts
 

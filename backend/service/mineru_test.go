@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AnTengye/contractdiff/backend/config"
@@ -339,6 +340,18 @@ func TestMineruServiceFetchZipAndExtractJSONInvalidZip(t *testing.T) {
 	_, err := svc.FetchZipAndExtractJSON(server.URL)
 	if err == nil {
 		t.Error("Expected error for invalid ZIP")
+	}
+}
+
+func TestMineruServiceResultBodyLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 64)))
+	}))
+	defer server.Close()
+
+	svc := NewMineruService(&config.MineruConfig{MaxResultSizeBytes: 16})
+	if _, err := svc.FetchJSONResult(server.URL); err == nil {
+		t.Fatal("oversized MinerU result was accepted")
 	}
 }
 

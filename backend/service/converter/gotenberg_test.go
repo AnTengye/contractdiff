@@ -359,6 +359,45 @@ func TestIsAvailable_Success(t *testing.T) {
 	}
 }
 
+func TestConvertDOCXToPDF_RejectsNonPDFContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html>error</html>"))
+	}))
+	defer server.Close()
+
+	converter, err := NewGotenbergConverter(&config.GotenbergConfig{Enabled: true, APIURL: server.URL, Timeout: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := converter.ConvertDOCXToPDF(context.Background(), []byte("docx"), "test.docx"); err == nil {
+		t.Fatal("HTML response was accepted as converted PDF")
+	}
+}
+
+func TestConvertDOCXToPDF_EnforcesOutputLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("%PDF-1.4 output-too-large"))
+	}))
+	defer server.Close()
+
+	converter, err := NewGotenbergConverter(&config.GotenbergConfig{
+		Enabled:        true,
+		APIURL:         server.URL,
+		Timeout:        5,
+		MaxOutputBytes: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := converter.ConvertDOCXToPDF(context.Background(), []byte("docx"), "test.docx"); err == nil {
+		t.Fatal("oversized converter response was accepted")
+	}
+}
+
 func TestIsAvailable_ServiceDown(t *testing.T) {
 	cfg := &config.GotenbergConfig{
 		Enabled: true,

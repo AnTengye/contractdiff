@@ -6,3 +6,12 @@ backend/config.yaml
 .agent
 test
 .idea
+
+# Feedback contains confidential contract evidence
+data/
+backend/data/
+*.db-wal
+*.db-shm
+
+# Local browser diagnostics
+.playwright-mcp/

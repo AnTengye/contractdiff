@@ -1,0 +1,7 @@
+.git
+.agents
+.playwright-mcp
+frontend/node_modules
+frontend/dist
+backend/config.yaml
+data

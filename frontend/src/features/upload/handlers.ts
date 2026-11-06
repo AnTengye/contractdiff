@@ -3,6 +3,12 @@ import { contractActions, contractStore } from '@/store';
 import { uploadContract, pollForResult, invalidateCache } from '@/services/api';
 import type { FileType, CancelToken } from '@/types';
 
+let docxUploadAvailable = true;
+
+export function setDocxUploadAvailable(available: boolean): void {
+  docxUploadAvailable = available;
+}
+
 /**
  * Handle file upload for a side
  */
@@ -13,13 +19,26 @@ export async function handleFileUpload(
 ): Promise<void> {
   // Detect file type
   const fileType: FileType = file.name.toLowerCase().endsWith('.docx') ? 'docx' : 'pdf';
+  if (fileType === 'docx' && !docxUploadAvailable) {
+    contractActions.setUploadError(side, '当前服务未配置 Word 转 PDF，暂时只能上传 PDF。');
+    return;
+  }
 
   // Create cancellation token
   const cancelToken: CancelToken = { cancelled: false };
   contractActions.setCancelToken(side, cancelToken);
 
+  contractActions.resetSide(side);
+  contractActions.setCancelToken(side, cancelToken);
+
   // Start upload
   contractActions.setUploadProgress(side, 10, '上传中...');
+
+  const isCurrentUpload = (): boolean =>
+    !cancelToken.cancelled && contractStore.getState().cancelTokens[side] === cancelToken;
+  const assertCurrentUpload = (): void => {
+    if (!isCurrentUpload()) throw new Error('Cancelled');
+  };
 
   try {
     // Check cancellation
@@ -34,16 +53,18 @@ export async function handleFileUpload(
     // Upload file
     const uploadResult = await uploadContract(file, parserId, forceReprocess);
 
+    assertCurrentUpload();
+    contractActions.setContractId(side, uploadResult.id);
+
     // Check cancellation after upload
-    if (cancelToken.cancelled) {
-      throw new Error('Cancelled');
-    }
+    assertCurrentUpload();
 
     let result;
     let isCached = false;
 
     // Check if this is a cached/duplicate upload - skip polling
     if (uploadResult.is_duplicate && uploadResult.status === 'completed') {
+      assertCurrentUpload();
       contractActions.setUploadProgress(side, 90, '使用缓存结果...');
       isCached = true;
 
@@ -51,6 +72,7 @@ export async function handleFileUpload(
       const { getContractDetail } = await import('@/services/api');
       const detail = await getContractDetail(uploadResult.id);
 
+      assertCurrentUpload();
       if (!detail.json_data) {
         throw new Error('Cached contract has no data');
       }
@@ -64,6 +86,7 @@ export async function handleFileUpload(
     } else {
       const selectedOption = parserSelector?.options[parserSelector.selectedIndex];
       const parserName = selectedOption?.text || '解析器';
+      assertCurrentUpload();
       contractActions.setUploadProgress(side, 30, `${parserName} 处理中...`);
 
       // Poll for result
@@ -71,15 +94,13 @@ export async function handleFileUpload(
         uploadResult.id,
         cancelToken,
         (progress, message) => {
-          contractActions.setUploadProgress(side, progress, message);
+          if (isCurrentUpload()) contractActions.setUploadProgress(side, progress, message);
         }
       );
     }
 
     // Check cancellation
-    if (cancelToken.cancelled) {
-      throw new Error('Cancelled');
-    }
+    assertCurrentUpload();
 
     // Success - update store
     contractActions.setData(
@@ -97,10 +118,12 @@ export async function handleFileUpload(
       return;
     }
 
-    const message = error instanceof Error ? error.message : 'Upload failed';
-    contractActions.setUploadError(side, message);
+    if (isCurrentUpload()) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      contractActions.setUploadError(side, message);
+    }
   } finally {
-    contractActions.setCancelToken(side, null);
+    contractActions.clearCancelToken(side, cancelToken);
   }
 }
 

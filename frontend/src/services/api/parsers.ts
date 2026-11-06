@@ -20,12 +20,18 @@ interface BackendParser {
 
 interface ParsersResponse {
   parsers: BackendParser[];
+  docx_available?: boolean;
+}
+
+export interface ParserCatalog {
+  parsers: Parser[];
+  docxAvailable: boolean;
 }
 
 /**
  * Get available parsers
  */
-export async function getParsers(): Promise<Parser[]> {
+export async function getParsers(): Promise<ParserCatalog> {
   const token = getToken();
   if (!token) {
     throw new Error('Not authenticated');
@@ -40,14 +46,17 @@ export async function getParsers(): Promise<Parser[]> {
   if (!response.ok) {
     // Return empty array on error (parsers might not be configured)
     console.warn('Failed to fetch parsers');
-    return [];
+    return { parsers: [], docxAvailable: false };
   }
 
   const data: ParsersResponse = await response.json();
   // Map backend format (type) to frontend format (id)
-  return (data.parsers || []).map((p) => ({
-    id: p.type,
-    name: p.name,
-    description: p.description,
-  }));
+  return {
+    parsers: (data.parsers || []).map((p) => ({
+      id: p.type,
+      name: p.name,
+      description: p.description,
+    })),
+    docxAvailable: data.docx_available === true,
+  };
 }

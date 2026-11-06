@@ -1,16 +1,13 @@
 // Text Diff Engine V2 - Main orchestrator
-// Uses jsdiff for whole-document comparison with coordinate mapping
+// Aligns document units before using jsdiff and maps results to source coordinates.
 
-import type {
-  ContractData,
-  TextDiffResultV2,
-} from './types';
+import type { ContractData, TextDiffResultV2 } from './types';
 import { extractText } from './textExtractor';
-import { computeDiff, type DiffComputeOptions } from './diffComputer';
-import {
-  mapChangesToSegments,
-  mergeAdjacentRenderSegments,
-} from './diffMapper';
+import { calculateStats, type DiffComputeOptions } from './diffComputer';
+import { computeAlignedDiff } from './alignment';
+import { DIFF_ENGINE_VERSION, BUILD_REVISION } from './version';
+export { DIFF_ENGINE_VERSION } from './version';
+import { mapChangesToSegments, mergeAdjacentRenderSegments } from './diffMapper';
 
 /**
  * Options for the text diff engine
@@ -22,12 +19,15 @@ export interface TextDiffEngineOptions {
   wordLevel?: boolean;
   /** Ignore whitespace differences (default: true) */
   ignoreWhitespace?: boolean;
-  /** Ignore punctuation differences (default: true) */
+  /** Ignore ordinary punctuation differences (default: false) */
   ignorePunctuation?: boolean;
   /** Merge adjacent segments with same type */
   mergeSegments?: boolean;
   /** Enable debug logging */
   debug?: boolean;
+  ignoreHeaders?: boolean;
+  timeoutMs?: number;
+  maxEditLength?: number;
 }
 
 /**
@@ -43,24 +43,29 @@ export function computeTextDiffV2(
     charLevel = true,
     wordLevel = false,
     ignoreWhitespace = true,
-    ignorePunctuation = true,
+    ignorePunctuation = false,
     mergeSegments = true,
     debug = false,
   } = options;
 
-  console.log('[TextDiffV2] Starting comparison...');
-  console.log('[TextDiffV2] Options:', { ignoreWhitespace, ignorePunctuation });
+  if (debug) console.log('[TextDiffV2] Starting comparison...');
+  if (debug) console.log('[TextDiffV2] Options:', { ignoreWhitespace, ignorePunctuation });
 
   // Step 1: Extract text from both documents
-  const leftExtracted = extractText(leftData);
-  const rightExtracted = extractText(rightData);
+  const started = performance.now();
+  const leftExtracted = extractText(leftData, options);
+  const rightExtracted = extractText(rightData, options);
+  if (!leftExtracted.units.length || !rightExtracted.units.length)
+    throw new Error('文档没有可比较内容，请检查解析结果或提交反馈。');
+  if (leftExtracted.fullText.length + rightExtracted.fullText.length > 2000000)
+    throw new Error('文档超出本次比对范围，请拆分后重试。');
 
   if (debug) {
     console.log('[TextDiffV2] Left text preview:', leftExtracted.fullText.substring(0, 200));
     console.log('[TextDiffV2] Right text preview:', rightExtracted.fullText.substring(0, 200));
   }
 
-  // Step 2: Compute diff between the two full texts
+  // Step 2: Align paragraphs and cells, then compare text within matched units.
   const diffOptions: DiffComputeOptions = {
     charLevel,
     wordLevel,
@@ -68,11 +73,16 @@ export function computeTextDiffV2(
     ignorePunctuation,
   };
 
-  const { changes, stats } = computeDiff(
+  diffOptions.timeoutMs = options.timeoutMs;
+  diffOptions.maxEditLength = options.maxEditLength;
+  const changes = computeAlignedDiff(
+    leftExtracted.units,
+    rightExtracted.units,
     leftExtracted.fullText,
     rightExtracted.fullText,
     diffOptions
   );
+  const stats = calculateStats(changes);
 
   if (debug) {
     console.log('[TextDiffV2] Diff changes count:', changes.length);
@@ -89,7 +99,26 @@ export function computeTextDiffV2(
     rightSegments = mergeAdjacentRenderSegments(rightSegments);
   }
 
-  console.log(`[TextDiffV2] Left segments: ${leftSegments.length}, Right segments: ${rightSegments.length}`);
+  if (debug)
+    console.log(
+      `[TextDiffV2] Left segments: ${leftSegments.length}, Right segments: ${rightSegments.length}`
+    );
+
+  const coordinateWarnings = [leftData, rightData].flatMap((data) => {
+    const values = data.metadata?.coordinate_warnings;
+    return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : [];
+  });
+  const warnings = [
+    ...coordinateWarnings,
+    ...([...leftSegments, ...rightSegments].some((s) => s.type !== 'unchanged' && !s.bbox)
+      ? ['部分差异缺少坐标，无法在 PDF 上定位。']
+      : []),
+    ...([...leftSegments, ...rightSegments].some(
+      (s) => s.type !== 'unchanged' && s.bbox && s.precision === 'block'
+    )
+      ? ['部分位置仅有区域坐标，高亮显示整个区域。']
+      : []),
+  ];
 
   return {
     left: {
@@ -104,6 +133,22 @@ export function computeTextDiffV2(
     },
     changes,
     stats,
+    metadata: {
+      engineVersion: DIFF_ENGINE_VERSION,
+      buildRevision: BUILD_REVISION,
+      options: {
+        ignoreWhitespace,
+        ignorePunctuation,
+        ignoreHeaders: options.ignoreHeaders ?? false,
+        charLevel,
+        wordLevel,
+        mergeSegments,
+        timeoutMs: options.timeoutMs ?? 10000,
+        maxEditLength: options.maxEditLength ?? 20000,
+      },
+      durationMs: performance.now() - started,
+      warnings: [...new Set(warnings)],
+    },
   };
 }
 
@@ -127,7 +172,7 @@ export function getDiffIndices(result: TextDiffResultV2, side: 'left' | 'right')
  * Count total number of differences
  */
 export function countDiffs(result: TextDiffResultV2): number {
-  return result.changes.filter(c => c.type !== 'unchanged').length;
+  return result.stats.totalChanges;
 }
 
 /**

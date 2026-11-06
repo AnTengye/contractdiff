@@ -145,6 +145,11 @@
                         </div>
                     </div>
 
+                    <div class="comparison-options">
+                      <label><input type="checkbox" id="ignore-whitespace" checked> 忽略空白差异</label>
+                      <label><input type="checkbox" id="ignore-punctuation"> 忽略普通标点（保留金额、百分比和正负号）</label>
+                      <label><input type="checkbox" id="ignore-headers"> 忽略页眉页脚</label>
+                    </div>
                     <div class="action-area">
                         <button class="btn btn-primary btn-large" id="compare-btn" disabled>
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -156,10 +161,16 @@
                         </button>
                     </div>
 
+                    <p id="comparison-status" role="status" aria-live="polite"></p>
+                    <div class="feedback-toolbar">
+                      <button type="button" class="btn btn-ghost" id="feedback-btn" disabled>反馈问题</button>
+                      <button type="button" class="btn btn-ghost" id="feedback-region-btn">框选问题区域</button>
+                      <button type="button" class="btn btn-ghost" id="feedback-history-btn">反馈记录</button>
+                    </div>
                     <!-- Diff Stats Summary (shown after comparison) -->
                     <div class="diff-stats-inline" id="diff-stats-inline" style="display: none;">
                         <div class="stats-badge total">
-                            <span class="stats-label">差异总数</span>
+                            <span class="stats-label">变更段落 / 单元格</span>
                             <span class="stats-value" id="inline-stat-total">0</span>
                         </div>
                         <div class="stats-badge added">
@@ -172,6 +183,8 @@
                             <span class="stats-value" id="inline-stat-removed">0</span>
                             <span class="stats-label">删除</span>
                         </div>
+                        <div class="stats-badge"><span class="stats-value" id="inline-stat-modified">0</span><span class="stats-label">修改</span></div>
+                        <div class="stats-badge"><span class="stats-value" id="inline-stat-moved">0</span><span class="stats-label">移动</span></div>
                     </div>
                 </section>
 

@@ -3,9 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,9 +23,10 @@ const (
 )
 
 type MinioService struct {
-	client *minio.Client
-	bucket string
-	config *config.MinioConfig
+	client     *minio.Client
+	bucket     string
+	config     *config.MinioConfig
+	httpClient *http.Client
 }
 
 func NewMinioService(cfg *config.MinioConfig) (*MinioService, error) {
@@ -38,6 +42,12 @@ func NewMinioService(cfg *config.MinioConfig) (*MinioService, error) {
 		client: client,
 		bucket: cfg.Bucket,
 		config: cfg,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
 }
 
@@ -140,6 +150,38 @@ func (s *MinioService) DeleteFile(ctx context.Context, objectName string) error 
 	}
 
 	return nil
+}
+
+func (s *MinioService) CopyFile(ctx context.Context, source, destination string) error {
+	_, err := s.client.CopyObject(ctx, minio.CopyDestOptions{Bucket: s.bucket, Object: destination}, minio.CopySrcOptions{Bucket: s.bucket, Object: source})
+	return err
+}
+
+func (s *MinioService) OpenFile(ctx context.Context, key string) (io.ReadCloser, string, error) {
+	// A CDN may turn a cold-cache HEAD into GET, invalidating the SDK's
+	// method-bound signature. Read the body and metadata in one signed GET.
+	objectURL, err := s.GetPresignedURL(ctx, key)
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create MinIO object request")
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		// net/http includes the signed URL in url.Error; keep it out of logs.
+		var requestError *url.Error
+		if errors.As(err, &requestError) {
+			err = requestError.Err
+		}
+		return nil, "", fmt.Errorf("MinIO object GET failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, "", fmt.Errorf("MinIO object GET returned status %d", resp.StatusCode)
+	}
+	return resp.Body, resp.Header.Get("Content-Type"), nil
 }
 
 // GetPublicURL returns a public URL for the object (if bucket policy allows)

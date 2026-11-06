@@ -1,13 +1,22 @@
 // PDF Viewer component - displays PDF pages
 
-import { pdfStore, pdfActions, contractStore, diffStore, uiStore, uiActions } from '@/store';
-import { loadPdfDocument, renderAllPages } from '@/services/document/pdf';
+import {
+  pdfStore,
+  pdfActions,
+  contractStore,
+  diffStore,
+  diffActions,
+  uiStore,
+  uiActions,
+} from '@/store';
+import { loadPdfDocument, LazyPdfRenderer } from '@/services/document/pdf';
 import {
   renderHighlights,
   updateCurrentHighlight,
   scrollToHighlight,
   clearHighlights,
 } from '@/services/document/pdfHighlight';
+import { cancelComparison } from '@/features/comparison/comparisonV3';
 import { getRequiredElement, hide, show } from '@/utils/dom';
 
 export class PdfViewerV2 {
@@ -18,6 +27,9 @@ export class PdfViewerV2 {
     placeholder: HTMLElement;
     filename: HTMLElement;
   };
+  private lazy: LazyPdfRenderer | null = null;
+  private loadGeneration = 0;
+  private unsubscribeContract: (() => void) | null = null;
   private unsubscribe: (() => void) | null = null;
   private unsubscribeDiff: (() => void) | null = null;
 
@@ -39,10 +51,22 @@ export class PdfViewerV2 {
 
   private subscribeToStore(): void {
     // Subscribe to contract store for URL changes
-    contractStore.subscribe((state, prevState) => {
+    this.unsubscribeContract = contractStore.subscribe((state, prevState) => {
       const sideState = state[this.side];
       const prevSideState = prevState[this.side];
 
+      if (sideState.pdfUrl !== prevSideState.pdfUrl && !sideState.pdfUrl) {
+        this.loadGeneration++;
+        this.lazy?.destroy();
+        this.lazy = null;
+        clearHighlights(this.side);
+        const old =
+          this.side === 'left' ? pdfStore.getState().leftDoc : pdfStore.getState().rightDoc;
+        if (this.side === 'left') pdfActions.setLeftDoc(null);
+        else pdfActions.setRightDoc(null);
+        if (old) void old.destroy();
+        show(this.elements.placeholder);
+      }
       if (sideState.pdfUrl !== prevSideState.pdfUrl && sideState.pdfUrl) {
         console.log(`[PdfViewer ${this.side}] Loading PDF:`, sideState.pdfUrl);
         this.loadPdf(sideState.pdfUrl);
@@ -59,16 +83,16 @@ export class PdfViewerV2 {
     // Subscribe to PDF store for zoom changes
     this.unsubscribe = pdfStore.subscribe((state, prevState) => {
       if (state.zoomLevel !== prevState.zoomLevel) {
-        this.rerender();
+        this.lazy?.setZoom(state.zoomLevel);
       }
     });
 
     // Subscribe to diff store for highlight updates
     this.unsubscribeDiff = diffStore.subscribe((state, prevState) => {
       // Check if diff result changed (new comparison)
-      if (state.textDiffResult !== prevState.textDiffResult && state.textDiffResult) {
+      if (state.textDiffResult !== prevState.textDiffResult) {
         console.log(`[PdfViewer ${this.side}] Diff result changed, rendering highlights`);
-        this.renderDiffHighlights(state.currentDiffIndex);
+        void this.handleDiffIndexChange(state.currentDiffIndex, -1);
       }
       // Check if current diff index changed (navigation)
       else if (state.currentDiffIndex !== prevState.currentDiffIndex) {
@@ -89,31 +113,49 @@ export class PdfViewerV2 {
 
     const sideResult = this.side === 'left' ? diffResult.left : diffResult.right;
 
-    // Wait a bit for PDF pages to be fully rendered
-    setTimeout(async () => {
-      await renderHighlights(sideResult.segments, this.side, currentDiffIndex);
-
-      // Scroll to current diff if there is one
-      if (currentDiffIndex >= 0) {
-        scrollToHighlight(this.side, currentDiffIndex);
-      }
-    }, 100);
+    await renderHighlights(
+      sideResult.segments,
+      this.side,
+      currentDiffIndex,
+      this.lazy?.renderedPages()
+    );
   }
 
   /**
    * Handle diff index change (navigation between diffs)
    */
-  private handleDiffIndexChange(newIndex: number, oldIndex: number): void {
+  private async handleDiffIndexChange(newIndex: number, oldIndex: number): Promise<void> {
     updateCurrentHighlight(this.side, newIndex, oldIndex);
 
     // Scroll to the new current diff
     if (newIndex >= 0) {
+      const result = diffStore.getState().textDiffResult;
+      const target = (this.side === 'left' ? result?.left : result?.right)?.segments.find(
+        (s) => s.diffId === newIndex && s.bbox
+      );
+      if (target) {
+        await this.lazy?.ensurePage(target.pageIdx + 1);
+        const page = this.elements.pagesContainer.querySelector(
+          `[data-page-num="${target.pageIdx + 1}"].pdf-page-wrapper`
+        );
+        if (page) {
+          const bounds = page.getBoundingClientRect();
+          const container = this.elements.container;
+          container.scrollTop += bounds.top - container.getBoundingClientRect().top;
+        }
+        await this.renderDiffHighlights(newIndex);
+      } else {
+        await this.renderDiffHighlights(newIndex);
+      }
       scrollToHighlight(this.side, newIndex);
     }
   }
 
   private async loadPdf(url: string): Promise<void> {
     const { placeholder, pagesContainer, filename } = this.elements;
+    const generation = ++this.loadGeneration;
+    this.lazy?.destroy();
+    this.lazy = null;
 
     try {
       // Show loading state
@@ -123,6 +165,10 @@ export class PdfViewerV2 {
       filename.textContent = '加载中...';
 
       const pdfDoc = await loadPdfDocument(url);
+      if (generation !== this.loadGeneration) {
+        await pdfDoc.destroy();
+        return;
+      }
 
       // Store document reference
       if (this.side === 'left') {
@@ -131,35 +177,56 @@ export class PdfViewerV2 {
         pdfActions.setRightDoc(pdfDoc);
       }
 
+      const metadata = contractStore.getState()[this.side].data?.metadata;
+      const parsedPages = metadata?.parser_page_count ?? metadata?.page_count;
+      if (typeof parsedPages === 'number' && parsedPages < pdfDoc.numPages) {
+        cancelComparison();
+        diffActions.setError('解析结果页数少于原件，本次比对未完成，请重新解析或反馈遗漏页。');
+      }
+
       // Hide placeholder, show container
       placeholder.classList.remove('loading');
       hide(placeholder);
       show(pagesContainer);
 
       // Render all pages
-      await this.rerender();
+      this.lazy = new LazyPdfRenderer(
+        pdfDoc,
+        pagesContainer,
+        this.elements.container,
+        this.side,
+        pdfStore.getState().zoomLevel,
+        (page) => {
+          const state = diffStore.getState();
+          const result =
+            this.side === 'left' ? state.textDiffResult?.left : state.textDiffResult?.right;
+          if (result)
+            void renderHighlights(
+              result.segments,
+              this.side,
+              state.currentDiffIndex,
+              new Set([page - 1])
+            );
+        }
+      );
+      await this.lazy.mount();
 
-      filename.textContent = '✓ PDF 已加载';
+      // A comparison may have completed while the PDF was mounting. Re-run
+      // the current navigation after wrappers and observers exist so a first
+      // diff on a later page is not left for manual discovery.
+      const currentDiff = diffStore.getState();
+      if (currentDiff.textDiffResult && currentDiff.currentDiffIndex >= 0) {
+        await this.handleDiffIndexChange(currentDiff.currentDiffIndex, -1);
+      }
+
+      if (generation === this.loadGeneration) filename.textContent = '✓ PDF 已加载';
     } catch (err) {
+      if (generation !== this.loadGeneration) return;
       console.error(`Failed to load PDF for ${this.side}:`, err);
       placeholder.classList.remove('loading');
       const p = placeholder.querySelector('p');
-      if (p) p.textContent = '⚠ PDF 加载失败';
+		if (p) p.textContent = '⚠ PDF 预览校验/加载失败，请重新上传或提交反馈';
       filename.textContent = '加载失败';
-    }
-  }
-
-  private async rerender(): Promise<void> {
-    const pdfDoc = this.side === 'left' ? pdfStore.getState().leftDoc : pdfStore.getState().rightDoc;
-    if (!pdfDoc) return;
-
-    const zoomLevel = pdfStore.getState().zoomLevel;
-    await renderAllPages(pdfDoc, this.elements.pagesContainer, this.side, zoomLevel);
-
-    // Re-render highlights after PDF re-render (e.g., after zoom change)
-    const diffState = diffStore.getState();
-    if (diffState.textDiffResult) {
-      this.renderDiffHighlights(diffState.currentDiffIndex);
     }
   }
 
@@ -199,9 +266,12 @@ export class PdfViewerV2 {
     setTimeout(() => {
       uiActions.setIsSyncing(false);
     }, 50);
-  }
+  };
 
   destroy(): void {
+    this.loadGeneration++;
+    this.lazy?.destroy();
+    this.unsubscribeContract?.();
     if (this.elements.container) {
       this.elements.container.removeEventListener('scroll', this.handleScroll);
     }

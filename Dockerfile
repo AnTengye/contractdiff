@@ -56,19 +56,20 @@ COPY --from=backend-builder /contractdiff .
 COPY --from=frontend-builder /app/frontend/dist ./static
 
 # Copy config template
-COPY backend/config.yaml ./config.yaml
+COPY backend/config.example.yaml ./config.yaml
 
 # Create non-root user for security
 RUN adduser -D -u 1000 appuser && \
+	mkdir -p /app/data && \
     chown -R appuser:appuser /app
 USER appuser
 
 # Expose port
-EXPOSE 8080
+EXPOSE 28080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://localhost:8080/ || exit 1
+    CMD wget -q --spider http://localhost:28080/ || exit 1
 
 # Run
 CMD ["./contractdiff"]

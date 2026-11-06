@@ -3,13 +3,14 @@
 # Configuration
 APP_NAME := contractdiff
 IMAGE := as2674as/contractdiff
+DATA_DIR ?= $(PWD)/data
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 # Build info
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-.PHONY: help build push deploy clean run dev
+.PHONY: help build push deploy clean run stop remove dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -34,18 +35,26 @@ clean: ## Remove local Docker images
 	-docker rmi $(IMAGE):latest 2>/dev/null
 	@echo "Clean complete"
 
-run: ## Run Docker container locally
-	docker run -d \
-		--name $(APP_NAME) \
-		-p 28080:8080 \
-		-v $(PWD)/backend/config.yaml:/app/config.yaml:ro \
-		$(IMAGE):latest
+run: ## Run Docker container locally with persistent feedback data
+	@mkdir -p "$(DATA_DIR)"
+	@if docker container inspect $(APP_NAME) >/dev/null 2>&1; then \
+		docker start $(APP_NAME); \
+	else \
+		docker run -d \
+			--name $(APP_NAME) \
+			-p 28080:28080 \
+			-v $(PWD)/backend/config.yaml:/app/config.yaml:ro \
+			-v "$(DATA_DIR):/app/data" \
+			$(IMAGE):latest; \
+	fi
 	@echo "Container started on http://localhost:28080"
 
-stop: ## Stop and remove local container
+stop: ## Stop local container without removing its persistent data
 	-docker stop $(APP_NAME) 2>/dev/null
-	-docker rm $(APP_NAME) 2>/dev/null
 	@echo "Container stopped"
+
+remove: ## Remove the stopped local container (data remains in DATA_DIR)
+	-docker rm $(APP_NAME) 2>/dev/null
 
 dev: ## Run development server
 	cd backend && go run main.go

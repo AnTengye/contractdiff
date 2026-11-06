@@ -1,10 +1,14 @@
 // Main application entry point
 import { UploadCard, DiffPane, PdfViewer, StatsPanel, setupZoomControls } from '@/components';
+import { FeedbackPanel } from '@/features/feedback/FeedbackPanel';
+import { diffStore } from '@/store';
+import { cancelComparison } from '@/features/comparison/comparisonV3';
 import { runComparisonV3 } from '@/features/comparison';
 import { setupSyncScroll } from '@/features/sync';
 import { DiffNavigation } from '@/features/navigation/diffNavigation';
 import { contractStore, selectCanCompare, uiStore } from '@/store';
 import { getCurrentUser, getParsers } from '@/services/api';
+import { setDocxUploadAvailable } from '@/features/upload';
 import { isAuthenticated, redirectToLogin, clearAuth, getUser } from '@/utils/auth';
 import { getRequiredElement, getElementById, toggle } from '@/utils/dom';
 
@@ -42,22 +46,41 @@ async function loadParsers(): Promise<void> {
   const rightSelector = getElementById<HTMLSelectElement>('parser-selector-right');
 
   try {
-    const parsers = await getParsers();
-    renderParserOptions([leftSelector, rightSelector], parsers);
+    const catalog = await getParsers();
+    renderParserOptions([leftSelector, rightSelector], catalog.parsers);
+    configureUploadFormats(catalog.docxAvailable);
   } catch (error) {
     console.warn('Failed to load parsers:', error);
     renderParserOptions([leftSelector, rightSelector], []);
+    configureUploadFormats(false);
   }
 }
 
-function renderParserOptions(selectors: Array<HTMLSelectElement | null>, parsers: Array<{ id: string; name: string }>): void {
+function configureUploadFormats(docxAvailable: boolean): void {
+  setDocxUploadAvailable(docxAvailable);
+  const accept = docxAvailable ? '.pdf,.docx' : '.pdf';
+  const label = docxAvailable ? '点击或拖拽上传 PDF/DOCX' : '点击或拖拽上传 PDF';
+  for (const side of ['left', 'right'] as const) {
+    const input = getElementById<HTMLInputElement>(`file-${side}`);
+    const hint = document.querySelector<HTMLElement>(`#upload-${side} .upload-hint`);
+    if (input) input.accept = accept;
+    if (hint) hint.textContent = label;
+  }
+}
+
+function renderParserOptions(
+  selectors: Array<HTMLSelectElement | null>,
+  parsers: Array<{ id: string; name: string }>
+): void {
   const availableParsers = parsers.length > 0 ? parsers : [DEFAULT_PARSER];
-  const options = availableParsers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-  const selectedParserId = availableParsers.some(p => p.id === DEFAULT_PARSER.id)
+  const options = availableParsers
+    .map((p) => `<option value="${p.id}">${p.name}</option>`)
+    .join('');
+  const selectedParserId = availableParsers.some((p) => p.id === DEFAULT_PARSER.id)
     ? DEFAULT_PARSER.id
     : availableParsers[0]?.id;
 
-  selectors.forEach(selector => {
+  selectors.forEach((selector) => {
     if (!selector) return;
     selector.innerHTML = options;
     if (selectedParserId) {
@@ -84,6 +107,8 @@ async function init(): Promise<void> {
   new PdfViewer('right');
   new StatsPanel();
   new DiffNavigation();
+  const user = await getCurrentUser();
+  new FeedbackPanel(user?.can_review_feedback ?? false);
 
   // Setup zoom controls
   setupZoomControls();
@@ -93,13 +118,26 @@ async function init(): Promise<void> {
 
   compareBtn.addEventListener('click', () => {
     // Use new V3 jsdiff-based comparison engine
-    runComparisonV3();
+    if (diffStore.getState().isComparing) cancelComparison();
+    else void runComparisonV3();
   });
 
   // Update compare button state based on data availability
   contractStore.subscribeToSelector(selectCanCompare, (canCompare) => {
     compareBtn.classList.toggle('disabled', !canCompare);
     (compareBtn as HTMLButtonElement).disabled = !canCompare;
+  });
+
+  diffStore.subscribe((state) => {
+    compareBtn.textContent = state.isComparing ? '取消比对' : '开始智能比对';
+    const status = document.getElementById('comparison-status');
+    if (status)
+      status.textContent = state.isComparing
+        ? '正在比对…'
+        : (state.error ??
+          (state.textDiffResult
+            ? `比对完成，共 ${state.totalDiffs} 处差异。${state.textDiffResult.metadata?.warnings.join('') ?? ''}`
+            : ''));
   });
 
   // Subscribe to UI store for section visibility
@@ -125,13 +163,11 @@ async function init(): Promise<void> {
     setupSyncScroll(pdfLeft, pdfRight);
   }
 
-// Expose logout function globally
+  // Expose logout function globally
   (window as unknown as { logout: () => void }).logout = () => {
     clearAuth();
     redirectToLogin();
   };
-
-
 
   console.log('ContractDiff initialized');
 }

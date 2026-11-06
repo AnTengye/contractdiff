@@ -32,22 +32,16 @@ func (p *MineruParser) GetCapabilities() ParserCapabilities {
 	return ParserCapabilities{
 		Name:             "MinerU",
 		Type:             ParserTypeMinerU,
-		SupportedFormats: []string{"pdf", "docx"},
+		SupportedFormats: []string{"pdf"},
 		MaxFileSize:      50 * 1024 * 1024, // 50MB
-		Features:         []string{"layout_analysis", "table_detection", "formula_recognition", "docx_support"},
-		Description:      "MinerU 智能文档解析，支持复杂布局、表格和公式识别",
+		Features:         []string{"layout_analysis", "table_detection", "formula_recognition"},
+		Description:      "MinerU 智能 PDF 解析，支持复杂布局、表格和公式识别",
 	}
 }
 
 // CanParse checks if MinerU can handle the given format
 func (p *MineruParser) CanParse(format string) bool {
-	caps := p.GetCapabilities()
-	for _, f := range caps.SupportedFormats {
-		if f == format {
-			return true
-		}
-	}
-	return false
+	return format == "pdf"
 }
 
 // CreateTask creates a new parsing task in MinerU
@@ -125,14 +119,17 @@ func (p *MineruParser) FetchResultWithPDF(ctx context.Context, resultURL string)
 // NormalizeResult converts MinerU output to standard format
 // MinerU output is already well-structured, we just ensure consistent field names
 func (p *MineruParser) NormalizeResult(rawData map[string]interface{}) (map[string]interface{}, error) {
+	// Normalization enriches blocks with derived page information. Work on a
+	// private copy so the raw parser response remains replayable evidence.
+	data := cloneJSONMap(rawData)
 	normalized := map[string]interface{}{
-		"paragraphs": extractParagraphs(rawData),
-		"tables":     extractTables(rawData),
-		"images":     extractImages(rawData),
-		"metadata":   extractMetadata(rawData),
+		"paragraphs": extractParagraphs(data),
+		"tables":     []interface{}{},
+		"images":     extractImages(data),
+		"metadata":   extractMetadata(data),
 	}
 
-	return normalized, nil
+	return finalizeNormalized(normalized)
 }
 
 // Helper functions for normalization
@@ -149,8 +146,16 @@ func extractParagraphs(data map[string]interface{}) []interface{} {
 					for _, block := range paraBlocks {
 						if blockMap, ok := block.(map[string]interface{}); ok {
 							// Add page number to each paragraph
-							blockMap["page"] = pageIdx + 1
-							paragraphs = append(paragraphs, blockMap)
+							copy := make(map[string]interface{}, len(blockMap)+1)
+							for key, value := range blockMap {
+								copy[key] = value
+							}
+							pageNumber := pageIdx + 1
+							if idx, ok := page["page_idx"].(float64); ok {
+								pageNumber = int(idx) + 1
+							}
+							copy["page"] = pageNumber
+							paragraphs = append(paragraphs, copy)
 						}
 					}
 				}
@@ -180,8 +185,9 @@ func extractTables(data map[string]interface{}) []interface{} {
 						if blockMap, ok := block.(map[string]interface{}); ok {
 							// Check if block type is table
 							if blockType, ok := blockMap["type"].(string); ok && blockType == "table" {
-								blockMap["page"] = pageIdx + 1
-								tables = append(tables, blockMap)
+								copy := cloneJSONMap(blockMap)
+								copy["page"] = pageIdx + 1
+								tables = append(tables, copy)
 							}
 						}
 					}
@@ -212,8 +218,9 @@ func extractImages(data map[string]interface{}) []interface{} {
 						if blockMap, ok := block.(map[string]interface{}); ok {
 							// Check if block type is image
 							if blockType, ok := blockMap["type"].(string); ok && blockType == "image" {
-								blockMap["page"] = pageIdx + 1
-								images = append(images, blockMap)
+								copy := cloneJSONMap(blockMap)
+								copy["page"] = pageIdx + 1
+								images = append(images, copy)
 							}
 						}
 					}
@@ -240,12 +247,27 @@ func extractMetadata(data map[string]interface{}) map[string]interface{} {
 	// Extract page count
 	if pdfInfo, ok := data["pdf_info"].([]interface{}); ok {
 		metadata["page_count"] = len(pdfInfo)
+		sizes := []interface{}{}
+		for idx, item := range pdfInfo {
+			if page, ok := item.(map[string]interface{}); ok {
+				if size, ok := page["page_size"].([]interface{}); ok && len(size) == 2 {
+					pageIdx := idx
+					if n, ok := page["page_idx"].(float64); ok {
+						pageIdx = int(n)
+					}
+					sizes = append(sizes, map[string]interface{}{"page_idx": pageIdx, "width": size[0], "height": size[1]})
+				}
+			}
+		}
+		metadata["page_sizes"] = sizes
 	}
 
 	// Try to extract any existing metadata
 	if meta, ok := data["metadata"].(map[string]interface{}); ok {
 		for k, v := range meta {
-			metadata[k] = v
+			if _, reserved := metadata[k]; !reserved {
+				metadata[k] = v
+			}
 		}
 	}
 

@@ -1,8 +1,31 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import { readFileSync, readdirSync } from 'fs';
+import { createHash } from 'crypto';
+
+const sourceHash = createHash('sha256');
+function hashSources(directory: string): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) hashSources(path);
+    else if (entry.name.endsWith('.ts')) sourceHash.update(entry.name).update(readFileSync(path));
+  }
+}
+hashSources(resolve(__dirname, 'src'));
+const lockedPackages = JSON.parse(
+  readFileSync(resolve(__dirname, 'package-lock.json'), 'utf8')
+).packages;
+for (const name of ['diff', 'pdfjs-dist', 'vite', 'typescript'])
+  sourceHash.update(name).update(lockedPackages?.[`node_modules/${name}`]?.version ?? 'unknown');
+for (const name of ['index.html', 'styles.css'])
+  sourceHash.update(name).update(readFileSync(resolve(__dirname, name)));
+const buildRevision = sourceHash.digest('hex').slice(0, 16);
 
 export default defineConfig({
   root: '.',
+  define: { __BUILD_REVISION__: JSON.stringify(buildRevision) },
   base: '/',
 
   build: {
@@ -14,9 +37,9 @@ export default defineConfig({
       },
       output: {
         manualChunks: {
-          'pdf': ['pdfjs-dist'],
-          'diff': ['diff'],
-          'docx': ['mammoth'],
+          pdf: ['pdfjs-dist'],
+          diff: ['diff'],
+          docx: ['mammoth'],
         },
       },
     },

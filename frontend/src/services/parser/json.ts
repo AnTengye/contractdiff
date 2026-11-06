@@ -131,8 +131,8 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
             const blockRef: BlockReference = {
               blockIdx: subBlock.index || para.index || 0,
               pageIdx: (para.page || 1) - 1,
-              bbox: subBlock.bbox || para.bbox || [0, 0, 0, 0],
-              pageSize: [612, 792],
+              bbox: subBlock.bbox ?? para.bbox,
+              pageSize: undefined,
               text: subText.trim(),
             };
 
@@ -150,8 +150,8 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
           const blockRef: BlockReference = {
             blockIdx: para.index || 0,
             pageIdx: (para.page || 1) - 1,
-            bbox: para.bbox || [0, 0, 0, 0],
-            pageSize: [612, 792],
+            bbox: para.bbox,
+            pageSize: undefined,
             text: blockText.trim(),
           };
 
@@ -200,7 +200,7 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
   for (const { block, pageIdx } of allBlocks) {
     // Find corresponding page info for page size
     const pageInfo = pages.find(p => p.page_idx === pageIdx);
-    const pageSize = pageInfo?.page_size || [612, 792];
+    const pageSize = pageInfo?.page_size;
 
     const blockText = extractBlockText(block);
 
@@ -208,8 +208,8 @@ export function parseContractJSON(json: ContractData): Paragraph[] {
     const blockRef: BlockReference = {
       blockIdx: block.index || 0, // Use 0 if index is missing
       pageIdx,
-      bbox: block.bbox || [0, 0, 0, 0],
-      pageSize: pageSize as [number, number],
+      bbox: block.bbox,
+      pageSize: pageSize as [number, number] | undefined,
       text: blockText.trim(),
     };
 

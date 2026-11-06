@@ -102,6 +102,12 @@ func main() {
 
 	// Initialize contract store with config
 	service.InitContractStore(&cfg.Store)
+	feedbackStore, err := service.NewFeedbackStore(cfg.Feedback.DBPath)
+	if err != nil {
+		slog.Error("failed to initialize feedback store", "error", err)
+		os.Exit(1)
+	}
+	defer feedbackStore.Close()
 
 	notifyManager := notify.NewManager(&cfg.Notification)
 	tokenChecker := service.NewTokenChecker(cfg, notifyManager)
@@ -118,7 +124,9 @@ func main() {
 	authHandler := handler.NewAuthHandler(cfg)
 	contractHandler := handler.NewContractHandler(minioSvc, parserRegistry, gotenbergConv, &cfg.Timing, timingAlerter)
 	callbackHandler := handler.NewCallbackHandler(mineruSvc)
-	parserHandler := handler.NewParserHandler(parserRegistry)
+	_, mineruAvailable := parserRegistry.Get(parser.ParserTypeMinerU)
+	parserHandler := handler.NewParserHandler(parserRegistry, gotenbergConv != nil && mineruAvailable == nil)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackStore, service.GetContractStore(), minioSvc, cfg)
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -193,6 +201,12 @@ func main() {
 		protected.GET("/contracts/:id/pdf", contractHandler.GetPDF)
 		protected.DELETE("/contracts/:id/cache", contractHandler.InvalidateCache)
 		protected.POST("/contracts/:id/renormalize", contractHandler.ReNormalize)
+		protected.POST("/feedback", feedbackHandler.Create)
+		protected.GET("/feedback", feedbackHandler.List)
+		protected.GET("/feedback/:id", feedbackHandler.Get)
+		protected.PUT("/feedback/:id", feedbackHandler.Update)
+		protected.GET("/feedback/:id/artifacts/:artifact", feedbackHandler.Artifact)
+		protected.GET("/feedback/:id/regression", feedbackHandler.Regression)
 	}
 
 	// Create server

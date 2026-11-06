@@ -63,18 +63,11 @@ func (h *CallbackHandler) HandleCallback(c *gin.Context) {
 	// Update contract based on callback
 	switch content.State {
 	case "done":
-		if len(content.FullPages) > 0 && content.FullPages[0].JsonURL != "" {
-			jsonData, err := h.mineruService.FetchJSONResult(content.FullPages[0].JsonURL)
-			if err != nil {
-				h.store.UpdateStatus(contract.ID, model.StatusFailed, "Failed to fetch JSON: "+err.Error())
-			} else {
-				h.store.UpdateJSONData(contract.ID, jsonData)
-			}
-		} else {
-			h.store.UpdateStatus(contract.ID, model.StatusCompleted, "")
-		}
+		// Completion means the upstream job is ready, not that validated data is
+		// available. The polling processor owns fetching, normalization and publication.
+		h.store.UpdateStatusIfNotTerminal(contract.ID, model.StatusProcessing, "")
 	case "failed":
-		h.store.UpdateStatus(contract.ID, model.StatusFailed, content.ErrorMsg)
+		h.store.UpdateStatusIfNotTerminal(contract.ID, model.StatusFailed, content.ErrorMsg)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Callback received"})
