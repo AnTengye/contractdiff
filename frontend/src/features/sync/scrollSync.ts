@@ -1,5 +1,5 @@
 // Scroll synchronization feature
-import { uiStore, uiActions } from '@/store';
+import { uiStore, uiActions, diffStore } from '@/store';
 import { SYNC_SCROLL } from '@/constants';
 
 let syncTimeout: number | null = null;
@@ -13,6 +13,8 @@ export function setupSyncScroll(
 ): () => void {
   const handleScroll = (source: HTMLElement, target: HTMLElement) => {
     const state = uiStore.getState();
+    const diff = diffStore.getState();
+    if (diff.aiFindings[diff.currentDiffIndex-diff.stats.total]) return;
     if (!state.syncScrollEnabled || state.isSyncing) return;
 
     uiActions.setIsSyncing(true);

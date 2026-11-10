@@ -88,6 +88,11 @@ export interface RenderSegment {
   pageSize?: [number, number];
   precision?: CoordinatePrecision;
   diffId?: number;
+  source?: 'ai';
+  category?: 'text' | 'format';
+  ambiguous?: boolean;
+  candidateLabel?: string;
+  contextOnly?: boolean;
 }
 export interface SideDiffResult {
   segments: RenderSegment[];

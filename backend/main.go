@@ -18,6 +18,7 @@ import (
 	"github.com/AnTengye/contractdiff/backend/pkg/notify"
 	"github.com/AnTengye/contractdiff/backend/pkg/timing"
 	"github.com/AnTengye/contractdiff/backend/service"
+	"github.com/AnTengye/contractdiff/backend/service/aidiff"
 	"github.com/AnTengye/contractdiff/backend/service/converter"
 	"github.com/AnTengye/contractdiff/backend/service/parser"
 	"github.com/gin-gonic/gin"
@@ -127,6 +128,9 @@ func main() {
 	_, mineruAvailable := parserRegistry.Get(parser.ParserTypeMinerU)
 	parserHandler := handler.NewParserHandler(parserRegistry, gotenbergConv != nil && mineruAvailable == nil)
 	feedbackHandler := handler.NewFeedbackHandler(feedbackStore, service.GetContractStore(), minioSvc, cfg)
+	aiService := aidiff.New(cfg.AIDiff, minioSvc)
+	defer aiService.Close()
+	aiHandler := handler.NewAIDiffHandler(aiService, service.GetContractStore())
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -193,6 +197,9 @@ func main() {
 	protected.Use(middleware.AuthMiddleware(&cfg.Auth))
 	{
 		protected.GET("/auth/me", authHandler.GetCurrentUser)
+		protected.POST("/ai-diff", aiHandler.Create)
+		protected.GET("/ai-diff/:id", aiHandler.Get)
+		protected.POST("/ai-diff/:id/visual", aiHandler.Visual)
 		protected.POST("/contracts/upload", contractHandler.Upload)
 		protected.GET("/contracts", contractHandler.List)
 		protected.GET("/contracts/:id", contractHandler.Get)
@@ -271,7 +278,7 @@ func cacheMiddleware() gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// Skip caching for API routes
-		if strings.HasPrefix(path, "/api") {
+		if strings.HasPrefix(path, "/api") || path == "/" || strings.HasSuffix(path, ".html") {
 			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 			c.Header("Pragma", "no-cache")
 			c.Header("Expires", "0")

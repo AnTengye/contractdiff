@@ -17,6 +17,7 @@ import {
   clearHighlights,
 } from '@/services/document/pdfHighlight';
 import { cancelComparison } from '@/features/comparison/comparisonV3';
+import { displaySegments } from '@/services/diff/display';
 import { getRequiredElement, hide, show } from '@/utils/dom';
 
 export class PdfViewerV2 {
@@ -29,6 +30,7 @@ export class PdfViewerV2 {
   };
   private lazy: LazyPdfRenderer | null = null;
   private loadGeneration = 0;
+  private navigationGeneration = 0;
   private unsubscribeContract: (() => void) | null = null;
   private unsubscribe: (() => void) | null = null;
   private unsubscribeDiff: (() => void) | null = null;
@@ -90,7 +92,7 @@ export class PdfViewerV2 {
     // Subscribe to diff store for highlight updates
     this.unsubscribeDiff = diffStore.subscribe((state, prevState) => {
       // Check if diff result changed (new comparison)
-      if (state.textDiffResult !== prevState.textDiffResult) {
+      if (state.textDiffResult !== prevState.textDiffResult || state.aiFindings !== prevState.aiFindings || state.aiCandidates !== prevState.aiCandidates) {
         console.log(`[PdfViewer ${this.side}] Diff result changed, rendering highlights`);
         void this.handleDiffIndexChange(state.currentDiffIndex, -1);
       }
@@ -105,16 +107,21 @@ export class PdfViewerV2 {
    * Render diff highlights on PDF overlay
    */
   private async renderDiffHighlights(currentDiffIndex: number): Promise<void> {
+    const state = diffStore.getState();
+    const selectedAI = state.aiFindings[currentDiffIndex-state.stats.total];
+    const legend = document.getElementById(`pdf-legend-${this.side}`);
+    if (legend) {
+      legend.textContent = selectedAI ? selectedAI.finding.category === 'format' ? '格式差异' : 'AI 识别区域' : this.side === 'left' ? '显示删除' : '显示新增';
+      legend.className = selectedAI ? `ai-pdf-legend${selectedAI.finding.category === 'format'?' ai-format-legend':''}` : this.side === 'left' ? 'diff-removed' : 'diff-added';
+    }
     const diffResult = diffStore.getState().textDiffResult;
     if (!diffResult) {
       clearHighlights(this.side);
       return;
     }
 
-    const sideResult = this.side === 'left' ? diffResult.left : diffResult.right;
-
     await renderHighlights(
-      sideResult.segments,
+      displaySegments(diffStore.getState(), this.side),
       this.side,
       currentDiffIndex,
       this.lazy?.renderedPages()
@@ -125,16 +132,17 @@ export class PdfViewerV2 {
    * Handle diff index change (navigation between diffs)
    */
   private async handleDiffIndexChange(newIndex: number, oldIndex: number): Promise<void> {
+    const navigation = ++this.navigationGeneration;
     updateCurrentHighlight(this.side, newIndex, oldIndex);
 
     // Scroll to the new current diff
     if (newIndex >= 0) {
-      const result = diffStore.getState().textDiffResult;
-      const target = (this.side === 'left' ? result?.left : result?.right)?.segments.find(
+      const target = displaySegments(diffStore.getState(), this.side).find(
         (s) => s.diffId === newIndex && s.bbox
       );
       if (target) {
         await this.lazy?.ensurePage(target.pageIdx + 1);
+        if (navigation !== this.navigationGeneration) return;
         const page = this.elements.pagesContainer.querySelector(
           `[data-page-num="${target.pageIdx + 1}"].pdf-page-wrapper`
         );
@@ -148,6 +156,8 @@ export class PdfViewerV2 {
         await this.renderDiffHighlights(newIndex);
       }
       scrollToHighlight(this.side, newIndex);
+    } else {
+      await this.renderDiffHighlights(newIndex);
     }
   }
 
@@ -156,6 +166,10 @@ export class PdfViewerV2 {
     const generation = ++this.loadGeneration;
     this.lazy?.destroy();
     this.lazy = null;
+    const previousDoc = this.side === 'left' ? pdfStore.getState().leftDoc : pdfStore.getState().rightDoc;
+    if (this.side === 'left') pdfActions.setLeftDoc(null);
+    else pdfActions.setRightDoc(null);
+    if (previousDoc) void previousDoc.destroy();
 
     try {
       // Show loading state
@@ -198,11 +212,9 @@ export class PdfViewerV2 {
         pdfStore.getState().zoomLevel,
         (page) => {
           const state = diffStore.getState();
-          const result =
-            this.side === 'left' ? state.textDiffResult?.left : state.textDiffResult?.right;
-          if (result)
+          if (state.textDiffResult)
             void renderHighlights(
-              result.segments,
+              displaySegments(state, this.side),
               this.side,
               state.currentDiffIndex,
               new Set([page - 1])

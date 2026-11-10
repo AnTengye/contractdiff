@@ -1,6 +1,8 @@
 // Diff store - manages diff results and statistics
 import { createStore } from './Store';
 import type { TextDiffResultV2 } from '@/services/diff/textv2';
+import type { AIJob } from '@/services/api/aiDiff';
+import type { MappedAIFinding } from '@/services/diff/aiMapping';
 
 export interface DiffStats {
   added: number;
@@ -18,6 +20,11 @@ export interface DiffState {
   totalDiffs: number;
   comparisonId: string | null;
   error: string | null;
+  aiStatus: 'idle' | 'running' | 'completed' | 'partial' | 'failed';
+  aiJob: AIJob | null;
+  aiFindings: MappedAIFinding[];
+  aiError: string | null;
+  aiCandidates: Record<string, number>;
   context: {
     engineVersion: string;
     buildRevision: string;
@@ -34,6 +41,11 @@ const initialState: DiffState = {
   comparisonId: null,
   context: null,
   error: null,
+  aiStatus: 'idle',
+  aiJob: null,
+  aiFindings: [],
+  aiError: null,
+  aiCandidates: {},
 };
 
 export const diffStore = createStore(initialState);
@@ -63,6 +75,7 @@ export const diffActions = {
 
     diffStore.setState({
       textDiffResult: result,
+      aiStatus: 'idle', aiJob: null, aiFindings: [], aiError: null, aiCandidates: {},
       comparisonId:
         globalThis.crypto?.randomUUID?.() ??
         `comparison-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -84,9 +97,31 @@ export const diffActions = {
     diffStore.setState({ context });
   },
 
+  setAIStatus(aiStatus: DiffState['aiStatus'], aiError: string | null = null) {
+    diffStore.setState({ aiStatus, aiError });
+  },
+
+  setAIJob(job: AIJob, findings: MappedAIFinding[]) {
+    const state = diffStore.getState();
+    const totalDiffs = (state.textDiffResult?.stats.totalChanges ?? 0) + findings.length;
+    diffStore.setState({
+      aiJob: job, aiFindings: findings,
+      aiStatus: job.status === 'queued' || job.status === 'running' ? 'running' : job.status,
+      aiError: job.error ?? null, totalDiffs,
+      currentDiffIndex: state.currentDiffIndex < 0 && state.stats.total === 0 && findings.length > 0 ? 0 : state.currentDiffIndex < totalDiffs ? state.currentDiffIndex : -1,
+    });
+  },
+
+  selectAICandidate(findingId: string, side: 'left' | 'right', index: number, diffIndex: number) {
+    diffStore.setState(state=>({
+      aiCandidates: { ...state.aiCandidates, [`${findingId}:${side}`]: index }, currentDiffIndex: diffIndex,
+    }));
+  },
+
   setError(error: string) {
     diffStore.setState({
       textDiffResult: null,
+      aiStatus: 'idle', aiJob: null, aiFindings: [], aiError: null, aiCandidates: {}, currentDiffIndex: -1,
       comparisonId: null,
       error,
       isComparing: false,

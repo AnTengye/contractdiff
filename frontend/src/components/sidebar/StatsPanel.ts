@@ -35,7 +35,7 @@ export class StatsPanel {
     if (moved) moved.textContent = String(stats.moved);
     if (!this.elements.container) return;
 
-    if (stats.total > 0) {
+    if (diffStore.getState().textDiffResult) {
       this.elements.container.style.display = 'flex';
       if (this.elements.total) this.elements.total.textContent = String(stats.total);
       if (this.elements.added) this.elements.added.textContent = String(stats.added);

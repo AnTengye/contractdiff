@@ -4,6 +4,7 @@ import { FeedbackPanel } from '@/features/feedback/FeedbackPanel';
 import { diffStore } from '@/store';
 import { cancelComparison } from '@/features/comparison/comparisonV3';
 import { runComparisonV3 } from '@/features/comparison';
+import { AIReviewPanel } from '@/features/comparison/AIReviewPanel';
 import { setupSyncScroll } from '@/features/sync';
 import { DiffNavigation } from '@/features/navigation/diffNavigation';
 import { contractStore, selectCanCompare, uiStore } from '@/store';
@@ -107,6 +108,7 @@ async function init(): Promise<void> {
   new PdfViewer('right');
   new StatsPanel();
   new DiffNavigation();
+  new AIReviewPanel();
   const user = await getCurrentUser();
   new FeedbackPanel(user?.can_review_feedback ?? false);
 
@@ -136,7 +138,7 @@ async function init(): Promise<void> {
         ? '正在比对…'
         : (state.error ??
           (state.textDiffResult
-            ? `比对完成，共 ${state.totalDiffs} 处差异。${state.textDiffResult.metadata?.warnings.join('') ?? ''}`
+            ? `算法比对完成，共 ${state.stats.total} 处文字/结构差异。${state.aiStatus === 'running'?'AI 正在异步识别，可继续查看原件。':''}${state.textDiffResult.metadata?.warnings.join('') ?? ''}`
             : ''));
   });
 
@@ -157,8 +159,8 @@ async function init(): Promise<void> {
   }
 
   // Setup synchronized scrolling for PDF viewers
-  const pdfLeft = getElementById('pdf-pages-left');
-  const pdfRight = getElementById('pdf-pages-right');
+  const pdfLeft = getElementById('pdf-viewer-left');
+  const pdfRight = getElementById('pdf-viewer-right');
   if (pdfLeft && pdfRight) {
     setupSyncScroll(pdfLeft, pdfRight);
   }

@@ -6,6 +6,7 @@ import {
   type RegressionExpectation,
 } from '@/services/api/feedback';
 import { escapeHtml } from '@/utils/html';
+import { displaySegments } from '@/services/diff/display';
 const categories: Record<string, string> = {
   missed: '漏报差异',
   false_positive: '误报差异',
@@ -137,8 +138,7 @@ export class FeedbackPanel {
     document.body.classList.remove('feedback-picking');
   }
   private openDiff(diffId: number, side: 'left' | 'right'): void {
-    const result = diffStore.getState().textDiffResult;
-    const segment = (side === 'left' ? result?.left : result?.right)?.segments.find(
+    const segment = displaySegments(diffStore.getState(),side).find(
       (s) => s.diffId === diffId
     );
     if (segment)
@@ -167,6 +167,7 @@ export class FeedbackPanel {
             right: pdfStore.getState().rightDoc?.numPages,
           },
           changes: result.changes,
+          ai: diff.aiJob ? { jobId:diff.aiJob.id,status:diff.aiStatus,model:diff.aiJob.model,reasoning:diff.aiJob.reasoning,findings:diff.aiJob.findings,selectedCandidates:diff.aiCandidates } : {status:diff.aiStatus,error:diff.aiError},
         }
       : { metadata: diff.context, error: diff.error };
     const form = this.createDialog.querySelector('form')!;

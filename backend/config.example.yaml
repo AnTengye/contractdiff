@@ -114,3 +114,9 @@ users:
 feedback:
   db_path: "data/feedback.db"
   reviewers: [] # Add existing usernames to enable the analysis workflow
+ai_diff:
+  # Inject OPENAI_API_KEY on the server. Never expose it through Vite/browser config.
+  api_url: "https://api.openai.com/v1"
+  model: "gpt-6-luna"
+  reasoning: "medium"
+  timeout_seconds: 180

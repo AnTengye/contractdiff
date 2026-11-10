@@ -59,7 +59,9 @@ export class DiffNavigation {
     // Update counter
     if (this.counterEl) {
       if (totalDiffs > 0 && currentDiffIndex >= 0) {
-        this.counterEl.textContent = `${currentDiffIndex + 1} / ${totalDiffs}`;
+        this.counterEl.textContent = currentDiffIndex < state.stats.total
+          ? `算法 ${currentDiffIndex + 1} / ${state.stats.total}`
+          : `AI ${currentDiffIndex-state.stats.total+1} / ${state.aiFindings.length}`;
       } else {
         this.counterEl.textContent = `0 / 0`;
       }

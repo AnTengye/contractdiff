@@ -59,7 +59,7 @@ export async function renderHighlights(
       }
       if (!pageSize) continue;
       // Exact source geometries are preserved; no character boxes are fabricated from a block.
-      const [x0, y0, x1, y1] = s.bbox!;
+      let [x0, y0, x1, y1] = s.bbox!;
       if (
         ![x0, y0, x1, y1, ...pageSize].every(Number.isFinite) ||
         pageSize[0] <= 0 ||
@@ -68,6 +68,10 @@ export async function renderHighlights(
         y1 < y0
       )
         continue;
+      if (s.category === 'format') {
+        x0 = Math.max(0,x0-6); y0 = Math.max(0,y0-6);
+        x1 = Math.min(pageSize[0],x1+6); y1 = Math.min(pageSize[1],y1+6);
+      }
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       rect.setAttribute('x', String((x0 * width) / pageSize[0]));
       rect.setAttribute('y', String((y0 * height) / pageSize[1]));
@@ -75,13 +79,12 @@ export async function renderHighlights(
       rect.setAttribute('height', String(Math.max(3, ((y1 - y0) * height) / pageSize[1])));
       rect.setAttribute(
         'class',
-        `highlight-${s.type}${s.diffId === currentDiffIndex ? ' highlight-current' : ''}`
+        `highlight-${s.type}${s.source === 'ai'?' highlight-ai':''}${s.category === 'format'?' highlight-format':''}${s.ambiguous?' highlight-ambiguous':''}${s.contextOnly?' highlight-context':''}${s.diffId === currentDiffIndex ? ' highlight-current' : ''}`
       );
       rect.dataset.diffIndex = String(s.diffId);
       rect.dataset.precision = s.precision ?? 'unknown';
       const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-      title.textContent =
-        s.precision === 'block' ? '此处仅有区域坐标，双击反馈定位问题' : '双击反馈此处差异';
+      title.textContent = s.ambiguous ? `候选 ${s.candidateLabel}，请核对重复字段` : s.category === 'format' ? '格式差异：框线位于正文外围' : s.precision !== 'character' ? '区域定位：原件未提供字符坐标' : '字符定位：双击反馈此处差异';
       rect.appendChild(title);
       rect.addEventListener('dblclick', () =>
         document.dispatchEvent(
@@ -89,6 +92,14 @@ export async function renderHighlights(
         )
       );
       overlay.appendChild(rect);
+      if (s.candidateLabel) {
+        const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('x',String((x0 * width) / pageSize[0]));
+        label.setAttribute('y',String(Math.max(13,(y0 * height) / pageSize[1]-4)));
+        label.setAttribute('class','highlight-candidate-label');
+        label.textContent = `候选 ${s.candidateLabel}`;
+        overlay.appendChild(label);
+      }
       out.push({ pageIdx, element: rect, diffIndex: s.diffId!, type: s.type, bbox: s.bbox! });
     }
   }
@@ -114,6 +125,7 @@ export function scrollToHighlight(side: 'left' | 'right', diffIndex: number): vo
   if (!highlight || !container) return;
   const bounds = highlight.getBoundingClientRect();
   container.scrollTo({
+    left: Math.max(0,container.scrollLeft+bounds.left-container.getBoundingClientRect().left-(container.clientWidth-bounds.width)/2),
     top:
       container.scrollTop +
       bounds.top -

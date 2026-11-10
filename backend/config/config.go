@@ -18,6 +18,15 @@ type Config struct {
 	Timing       TimingConfig       `yaml:"timing"` // Performance timing and alerting
 	Users        []User             `yaml:"users"`
 	Feedback     FeedbackConfig     `yaml:"feedback"`
+	AIDiff       AIDiffConfig       `yaml:"ai_diff"`
+}
+
+type AIDiffConfig struct {
+	APIKey         string `yaml:"api_key"`
+	APIURL         string `yaml:"api_url"`
+	Model          string `yaml:"model"`
+	Reasoning      string `yaml:"reasoning"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
 type FeedbackConfig struct {
@@ -172,6 +181,21 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Set defaults
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		cfg.AIDiff.APIKey = key
+	}
+	if cfg.AIDiff.APIURL == "" {
+		cfg.AIDiff.APIURL = "https://api.openai.com/v1"
+	}
+	if cfg.AIDiff.Model == "" {
+		cfg.AIDiff.Model = "gpt-6-luna"
+	}
+	if cfg.AIDiff.Reasoning == "" {
+		cfg.AIDiff.Reasoning = "medium"
+	}
+	if cfg.AIDiff.TimeoutSeconds <= 0 {
+		cfg.AIDiff.TimeoutSeconds = 180
+	}
 	if cfg.Feedback.DBPath == "" {
 		cfg.Feedback.DBPath = "data/feedback.db"
 	}

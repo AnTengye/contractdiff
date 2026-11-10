@@ -105,6 +105,9 @@ minio:
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
+	if cfg.AIDiff.Model != "gpt-6-luna" || cfg.AIDiff.Reasoning != "medium" || cfg.AIDiff.APIURL != "https://api.openai.com/v1" || cfg.AIDiff.TimeoutSeconds != 180 {
+		t.Fatal("AI defaults must preserve luna-medium")
+	}
 
 	// Verify defaults
 	if cfg.Server.Port != 8080 {

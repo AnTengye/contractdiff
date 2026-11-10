@@ -23,6 +23,7 @@ const data = { paragraphs: [{ text: '合同金额100元', page: 1 }] };
 beforeEach(() => {
   vi.stubGlobal('Worker', FakeWorker);
   vi.stubGlobal('document', { getElementById: () => null });
+  vi.stubGlobal('localStorage', { getItem: () => null });
   FakeWorker.instances = [];
   contractActions.setData('left', data, 'left', '/left.pdf', 'pdf', 'left.pdf');
   contractActions.setData('right', data, 'right', '/right.pdf', 'pdf', 'right.pdf');

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>合同比对工具 Pro</title>
+    <title>合同比对工具 · AI增加版</title>
     <meta name="description" content="智能合同文档差异对比工具">
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -25,6 +25,7 @@
                 </div>
                 <div class="app-title">
                     <h1>合同比对工具 <span style="font-size: 0.8em; opacity: 0.7; font-weight: 400;">Pro Max</span></h1>
+                    <p class="app-subtitle">AI增加版</p>
                 </div>
             </div>
 
@@ -146,6 +147,7 @@
                     </div>
 
                     <div class="comparison-options">
+                      <span class="engine-badge">structured-v3 · 默认对比标点</span>
                       <label><input type="checkbox" id="ignore-whitespace" checked> 忽略空白差异</label>
                       <label><input type="checkbox" id="ignore-punctuation"> 忽略普通标点（保留金额、百分比和正负号）</label>
                       <label><input type="checkbox" id="ignore-headers"> 忽略页眉页脚</label>
@@ -217,12 +219,14 @@
                             </div>
                         </div>
 
+                        <div class="pdf-workbench">
+                        <aside id="ai-review" class="ai-review" hidden aria-label="AI 复核结果"></aside>
                         <div class="diff-container">
                             <!-- Left PDF -->
                             <div class="pdf-viewer-container">
                                 <div class="pdf-controls">
                                     <span id="pdf-filename-left" class="status-text"></span>
-                                    <span class="diff-removed"
+                                    <span class="diff-removed" id="pdf-legend-left"
                                         style="text-decoration: none; font-size: 0.75rem;">显示删除</span>
                                 </div>
                                 <div class="pdf-viewer pdf-stage" id="pdf-viewer-left">
@@ -238,7 +242,7 @@
                             <div class="pdf-viewer-container">
                                 <div class="pdf-controls">
                                     <span id="pdf-filename-right" class="status-text"></span>
-                                    <span class="diff-added"
+                                    <span class="diff-added" id="pdf-legend-right"
                                         style="text-decoration: none; font-size: 0.75rem;">显示新增</span>
                                 </div>
                                 <div class="pdf-viewer pdf-stage" id="pdf-viewer-right">
@@ -249,6 +253,7 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
                         </div>
                     </div>
                 </section>
